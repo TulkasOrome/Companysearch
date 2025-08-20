@@ -1,18 +1,16 @@
 # enhanced_validation_agent.py
 
-import os
 import asyncio
 import aiohttp
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from enum import Enum
-import json
 import re
 import time
 from math import radians, cos, sin, asin, sqrt
 
-from search_strategist_agent import EnhancedCompanyEntry, SearchCriteria
+from agents.search_strategist_agent import EnhancedCompanyEntry, SearchCriteria
 
 
 class EnhancedValidationMode(Enum):

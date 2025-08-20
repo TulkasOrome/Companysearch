@@ -2,19 +2,17 @@
 
 import asyncio
 import json
-import itertools
 from datetime import datetime
 from typing import List, Dict, Any
 import pandas as pd
 
-from search_strategist_agent import (
+from agents.search_strategist_agent import (
     EnhancedSearchStrategistAgent,
     SearchCriteria,
     LocationCriteria,
     FinancialCriteria,
     OrganizationalCriteria,
-    BehavioralSignals,
-    BusinessType
+    BehavioralSignals
 )
 
 

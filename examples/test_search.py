@@ -2,15 +2,13 @@
 
 import asyncio
 import json
-from datetime import datetime
-from search_strategist_agent import (
+from agents.search_strategist_agent import (
     EnhancedSearchStrategistAgent,
     SearchCriteria,
     LocationCriteria,
     FinancialCriteria,
     OrganizationalCriteria,
-    BehavioralSignals,
-    BusinessType
+    BehavioralSignals
 )
 
 

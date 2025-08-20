@@ -14,6 +14,25 @@ from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from openai import AzureOpenAI
 
+# Import from core module using absolute imports
+try:
+    # When running as part of the package
+    from core.data_models import (
+        BusinessType,
+        CompanySize,
+        LocationCriteria,
+        FinancialCriteria,
+        OrganizationalCriteria,
+        BehavioralSignals,
+        SearchCriteria,
+        EnhancedCompanyEntry
+    )
+except ImportError:
+    # Fallback for compatibility
+    # Define them locally if core is not available
+    # (This is just for backward compatibility - you should have core installed)
+    pass
+
 
 # Enhanced Business Type Enum
 class BusinessType(Enum):
