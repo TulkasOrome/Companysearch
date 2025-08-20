@@ -1,0 +1,210 @@
+{
+  "session_id": "session_20250820_143240_860dc0b7",
+  "created_at": "2025-08-20T14:32:40.036372",
+  "last_activity": "2025-08-20T14:34:17.388587",
+  "current_step": "search_execution",
+  "search_criteria": {
+    "location": {
+      "countries": [
+        "Australia",
+        "Canada",
+        "Japan"
+      ],
+      "states": [],
+      "cities": [],
+      "regions": [],
+      "proximity": {
+        "location": "Sydney CBD",
+        "radius_km": 50
+      },
+      "exclusions": []
+    },
+    "financial": {
+      "revenue_min": 5000000.0,
+      "revenue_max": 100000000.0,
+      "revenue_currency": "AUD",
+      "giving_capacity_min": 20000.0,
+      "growth_rate_min": null,
+      "profitable": null
+    },
+    "organizational": {
+      "employee_count_min": 50,
+      "employee_count_max": 1000,
+      "employee_count_by_location": null,
+      "office_types": [
+        "Headquarters",
+        "Major Office"
+      ],
+      "company_stage": null
+    },
+    "behavioral": {
+      "csr_programs": [],
+      "csr_focus_areas": [
+        "Children",
+        "Community"
+      ],
+      "certifications": [],
+      "recent_events": [
+        "Office Move",
+        "CSR Launch"
+      ],
+      "technology_stack": [],
+      "esg_maturity": "Basic"
+    },
+    "business_types": [
+      "B2B",
+      "B2C"
+    ],
+    "industries": [],
+    "keywords": [],
+    "custom_prompt": null,
+    "excluded_industries": [],
+    "excluded_companies": [],
+    "excluded_behaviors": [
+      "Recent Misconduct"
+    ]
+  },
+  "search_results_count": 2,
+  "search_results": [
+    {
+      "location": "Australia",
+      "timestamp": "2025-08-20T14:33:53.124882",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Australia"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": {
+            "location": "Sydney CBD",
+            "radius_km": 50
+          },
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": 5000000.0,
+          "revenue_max": 100000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": 20000.0,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [
+            "Headquarters",
+            "Major Office"
+          ],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [
+            "Children",
+            "Community"
+          ],
+          "certifications": [],
+          "recent_events": [
+            "Office Move",
+            "CSR Launch"
+          ],
+          "technology_stack": [],
+          "esg_maturity": "Basic"
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    },
+    {
+      "location": "Canada",
+      "timestamp": "2025-08-20T14:34:17.387591",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Canada"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": {
+            "location": "Sydney CBD",
+            "radius_km": 50
+          },
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": 5000000.0,
+          "revenue_max": 100000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": 20000.0,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [
+            "Headquarters",
+            "Major Office"
+          ],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [
+            "Children",
+            "Community"
+          ],
+          "certifications": [],
+          "recent_events": [
+            "Office Move",
+            "CSR Launch"
+          ],
+          "technology_stack": [],
+          "esg_maturity": "Basic"
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    }
+  ],
+  "validation_results_count": 0,
+  "steps_completed": {
+    "search_config": false,
+    "search_execution": true,
+    "validation": false,
+    "export": false
+  },
+  "total_cost": 0.02,
+  "api_calls": {
+    "gpt4": 1,
+    "serper": 0
+  }
+}

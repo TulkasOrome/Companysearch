@@ -1,4 +1,4 @@
-# validation_agent.py
+# enhanced_validation_agent.py
 
 import os
 import asyncio
@@ -10,87 +10,78 @@ from enum import Enum
 import json
 import re
 import time
+from math import radians, cos, sin, asin, sqrt
 
-from search_strategist_agent import CompanyEntry, SearchStrategy
-
-
-class ValidationMode(Enum):
-    """Validation modes available"""
-    SKIP = "skip"  # Skip validation entirely
-    PLACES_ONLY = "places_only"  # Places API only
-    WEB_ONLY = "web_only"  # Web search only for B2C signals
-    FULL = "full"  # Both Places and Web search
+from search_strategist_agent import EnhancedCompanyEntry, SearchCriteria
 
 
-class ConfidenceFilter(Enum):
-    """Which confidence levels to validate"""
-    ALL = "all"
-    LOW_ONLY = "low"
-    MEDIUM_AND_LOW = "medium_and_low"
-    HIGH_AND_BELOW = "high_medium_low"
+class EnhancedValidationMode(Enum):
+    """Enhanced validation modes"""
+    SKIP = "skip"
+    PLACES_ONLY = "places_only"
+    WEB_ONLY = "web_only"
+    NEWS_ONLY = "news_only"
+    FULL = "full"
+    COMPREHENSIVE = "comprehensive"  # Places + Web + News + Maps
 
 
 @dataclass
-class ValidationResult:
-    """Result of company validation"""
+class EnhancedValidationResult:
+    """Enhanced validation result with comprehensive data"""
+    # Basic info
     company_name: str
     country: str
     business_type: str
     industry: str
     original_confidence: str
-    validation_status: str  # verified, rejected, unverified
+
+    # Validation results
+    validation_status: str  # verified, rejected, unverified, partial
     validation_mode: str
     confidence_after_validation: str
+    validation_score: float = 0.0  # 0-100 score
 
-    # Serper Places data
-    places_found: bool = False
-    places_results: List[Dict[str, Any]] = None
-    exact_match: bool = False
-    place_details: Dict[str, Any] = None
+    # Location validation
+    location_verified: bool = False
+    headquarters_confirmed: Optional[Dict[str, Any]] = None
+    office_locations_found: List[Dict[str, Any]] = None
+    proximity_matches: List[Dict[str, Any]] = None  # For proximity searches
 
-    # Web search data
-    web_search_performed: bool = False
-    web_results: List[Dict[str, Any]] = None
-    b2c_signals: List[str] = None
-    b2b_signals: List[str] = None
-    company_size_info: Dict[str, Any] = None
+    # Financial validation
+    revenue_verified: bool = False
+    revenue_data: Optional[Dict[str, Any]] = None
+    employee_count_verified: bool = False
+    employee_data: Optional[Dict[str, Any]] = None
+
+    # CSR/ESG validation
+    csr_programs_found: List[str] = None
+    csr_evidence: List[Dict[str, Any]] = None
+    certifications_verified: List[str] = None
+    giving_history_found: List[Dict[str, Any]] = None
+
+    # Recent events validation
+    recent_events_found: List[Dict[str, Any]] = None
+    leadership_changes: List[Dict[str, Any]] = None
+    growth_signals: List[str] = None
+    negative_signals: List[str] = None
+
+    # Serper data
+    serper_places_results: List[Dict[str, Any]] = None
+    serper_web_results: List[Dict[str, Any]] = None
+    serper_news_results: List[Dict[str, Any]] = None
+    serper_maps_results: List[Dict[str, Any]] = None
 
     # Metadata
     validation_reason: str = ""
+    validation_details: Dict[str, Any] = None
     serper_queries_used: int = 0
     processing_time: float = 0.0
     timestamp: str = ""
-
-    def to_dict(self):
-        return asdict(self)
+    data_sources: List[str] = None
 
 
-@dataclass
-class ValidationProgress:
-    """Track validation progress"""
-    total_processed: int = 0
-    verified: int = 0
-    rejected: int = 0
-    unverified: int = 0
-    serper_calls: int = 0
-    estimated_cost: float = 0.0
-    elapsed_time: float = 0.0
-
-    def update(self, result: ValidationResult):
-        self.total_processed += 1
-        if result.validation_status == "verified":
-            self.verified += 1
-        elif result.validation_status == "rejected":
-            self.rejected += 1
-        else:
-            self.unverified += 1
-        self.serper_calls += result.serper_queries_used
-        # Serper pricing estimate: $0.001 per query
-        self.estimated_cost += result.serper_queries_used * 0.001
-
-
-class SerperClient:
-    """Client for Serper API interactions"""
+class EnhancedSerperClient:
+    """Enhanced Serper client with all API endpoints"""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -105,29 +96,45 @@ class SerperClient:
         if self.session:
             await self.session.close()
 
-    async def places_search(self, query: str, country: str = None) -> List[Dict[str, Any]]:
-        """Search using Serper Places API"""
+    def _get_country_params(self, country: str) -> Dict[str, str]:
+        """Get country-specific parameters for Serper"""
+        country_configs = {
+            "United States": {"gl": "us", "hl": "en"},
+            "United Kingdom": {"gl": "uk", "hl": "en"},
+            "Canada": {"gl": "ca", "hl": "en"},
+            "Australia": {"gl": "au", "hl": "en"},
+            "Germany": {"gl": "de", "hl": "de"},
+            "France": {"gl": "fr", "hl": "fr"},
+            "Spain": {"gl": "es", "hl": "es"},
+            "Italy": {"gl": "it", "hl": "it"},
+            "Japan": {"gl": "jp", "hl": "ja"},
+            "Brazil": {"gl": "br", "hl": "pt"},
+            "India": {"gl": "in", "hl": "en"},
+            "Netherlands": {"gl": "nl", "hl": "nl"},
+            "Sweden": {"gl": "se", "hl": "sv"},
+            "Singapore": {"gl": "sg", "hl": "en"},
+            "Mexico": {"gl": "mx", "hl": "es"},
+        }
+        return country_configs.get(country, {"gl": "us", "hl": "en"})
+
+    async def places_search(self, query: str, location: str = None, country: str = None) -> List[Dict[str, Any]]:
+        """Enhanced places search with location context"""
         url = f"{self.base_url}/places"
         headers = {
             "X-API-KEY": self.api_key,
             "Content-Type": "application/json"
         }
 
-        # Build location based on country
         data = {"q": query}
 
-        # Add location for better results
+        # Add location context
+        if location:
+            data["location"] = location
+
+        # Add country parameters
         if country:
-            data["location"] = country
-            # Add country code if available
-            country_codes = {
-                "United States": "us", "United Kingdom": "uk", "Germany": "de",
-                "France": "fr", "Spain": "es", "Italy": "it", "Japan": "jp",
-                "Canada": "ca", "Australia": "au", "Brazil": "br", "India": "in",
-                "Netherlands": "nl", "Belgium": "be", "Poland": "pl", "Sweden": "se"
-            }
-            if country in country_codes:
-                data["gl"] = country_codes[country]
+            country_params = self._get_country_params(country)
+            data.update(country_params)
 
         try:
             async with self.session.post(url, json=data, headers=headers) as response:
@@ -142,8 +149,36 @@ class SerperClient:
             print(f"Places API exception: {e}")
             return []
 
-    async def web_search(self, query: str, country: str = None) -> List[Dict[str, Any]]:
-        """Search using Serper Web Search API"""
+    async def maps_search(self, query: str, location: str = None, country: str = None) -> List[Dict[str, Any]]:
+        """Maps search for detailed location data"""
+        url = f"{self.base_url}/maps"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+        data = {"q": query}
+
+        if location:
+            data["location"] = location
+
+        if country:
+            country_params = self._get_country_params(country)
+            data.update(country_params)
+
+        try:
+            async with self.session.post(url, json=data, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get("places", [])
+                else:
+                    return []
+        except Exception as e:
+            print(f"Maps API exception: {e}")
+            return []
+
+    async def web_search(self, query: str, country: str = None, num: int = 10) -> List[Dict[str, Any]]:
+        """Enhanced web search"""
         url = f"{self.base_url}/search"
         headers = {
             "X-API-KEY": self.api_key,
@@ -152,19 +187,12 @@ class SerperClient:
 
         data = {
             "q": query,
-            "num": 10
+            "num": num
         }
 
-        # Add country localization
         if country:
-            country_codes = {
-                "United States": "us", "United Kingdom": "uk", "Germany": "de",
-                "France": "fr", "Spain": "es", "Italy": "it", "Japan": "jp",
-                "Canada": "ca", "Australia": "au", "Brazil": "br", "India": "in",
-                "Netherlands": "nl", "Belgium": "be", "Poland": "pl", "Sweden": "se"
-            }
-            if country in country_codes:
-                data["gl"] = country_codes[country]
+            country_params = self._get_country_params(country)
+            data.update(country_params)
 
         try:
             async with self.session.post(url, json=data, headers=headers) as response:
@@ -172,396 +200,518 @@ class SerperClient:
                     result = await response.json()
                     return result.get("organic", [])
                 else:
-                    error_text = await response.text()
-                    print(f"Web search API error {response.status}: {error_text}")
                     return []
         except Exception as e:
             print(f"Web search API exception: {e}")
             return []
 
-
-class ValidationAgent:
-    """Validates companies using Serper API and GPT-4.1 analysis"""
-
-    def __init__(self, serper_api_key: str, gpt_deployment: str = "gpt-4.1"):
-        self.serper_api_key = serper_api_key
-        self.gpt_deployment = gpt_deployment
-        self.progress = ValidationProgress()
-
-        # Signal keywords for classification
-        self.b2c_indicators = [
-            "shop online", "buy now", "add to cart", "store locator",
-            "opening hours", "visit us", "customer service", "products",
-            "menu", "book now", "reservations", "retail", "consumer",
-            "shopping", "boutique", "outlet", "showroom", "price",
-            "sale", "discount", "free shipping", "customer reviews"
-        ]
-
-        self.b2b_indicators = [
-            "request a demo", "enterprise", "solutions", "wholesale",
-            "partners", "resellers", "distributors", "B2B", "business solutions",
-            "for businesses", "integration", "API", "SaaS", "consulting",
-            "agencies", "procurement", "vendor", "white label", "bulk pricing"
-        ]
-
-        # Company size indicators
-        self.size_indicators = {
-            "large": ["fortune 500", "multinational", "global", "billion", "10000+ employees"],
-            "medium": ["regional", "national", "million revenue", "100-1000 employees"],
-            "small": ["local", "startup", "small business", "under 100 employees"]
+    async def news_search(self, query: str, country: str = None, time_range: str = "month") -> List[Dict[str, Any]]:
+        """News search for recent events"""
+        url = f"{self.base_url}/news"
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Content-Type": "application/json"
         }
 
-    def normalize_company_name(self, name: str) -> str:
-        """Normalize company name for matching"""
-        # Remove common suffixes
-        suffixes = [
-            r'\s+(Ltd|Limited|Inc|Incorporated|Corp|Corporation|GmbH|AG|SA|SL|SpA|BV|NV|Oy|Ab|AS|A/S)\.?$',
-            r'\s+(Group|Holdings|International|Global|Company|Co\.)\.?$'
+        data = {
+            "q": query,
+            "time": time_range  # "day", "week", "month", "year"
+        }
+
+        if country:
+            country_params = self._get_country_params(country)
+            data.update(country_params)
+
+        try:
+            async with self.session.post(url, json=data, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get("news", [])
+                else:
+                    return []
+        except Exception as e:
+            print(f"News API exception: {e}")
+            return []
+
+
+class EnhancedValidationAgent:
+    """Enhanced validation agent with comprehensive validation capabilities"""
+
+    def __init__(self, serper_api_key: str):
+        self.serper_api_key = serper_api_key
+
+        # Enhanced signal keywords
+        self.csr_indicators = [
+            "corporate social responsibility", "csr", "sustainability", "esg",
+            "community involvement", "charity", "donation", "sponsorship",
+            "volunteer", "giving back", "social impact", "philanthropy",
+            "environmental", "diversity", "inclusion", "ethics"
         ]
 
-        normalized = name
-        for suffix in suffixes:
-            normalized = re.sub(suffix, '', normalized, flags=re.IGNORECASE)
+        self.financial_indicators = [
+            "revenue", "turnover", "sales", "income", "profit", "funding",
+            "valuation", "investment", "capital", "financial results",
+            "annual report", "investor relations", "earnings"
+        ]
 
-        return normalized.strip().lower()
+        self.negative_indicators = [
+            "bankruptcy", "lawsuit", "scandal", "fraud", "investigation",
+            "violation", "fine", "penalty", "controversy", "complaint",
+            "layoff", "closure", "restructuring", "lawsuit", "misconduct"
+        ]
 
-    def is_exact_match(self, query_name: str, result_name: str) -> bool:
-        """Check if names match with some flexibility"""
-        query_clean = self.normalize_company_name(query_name)
-        result_clean = self.normalize_company_name(result_name)
+        self.growth_indicators = [
+            "expansion", "growth", "acquisition", "merger", "new office",
+            "hiring", "investment", "partnership", "launch", "opening",
+            "record revenue", "milestone", "award", "recognition"
+        ]
 
-        # Exact match
-        if query_clean == result_clean:
-            return True
+    def calculate_proximity(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate distance between two coordinates in km"""
+        # Haversine formula
+        R = 6371  # Earth's radius in km
 
-        # One contains the other (but not too different)
-        if query_clean in result_clean or result_clean in query_clean:
-            # Check it's not a completely different business
-            exclude_terms = ["logistics", "solutions", "consulting", "wholesale", "b2b"]
-            for term in exclude_terms:
-                if term in result_clean and term not in query_clean:
-                    return False
-            return True
+        lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
 
-        # Check for very similar names (edit distance)
-        # This is a simple check - could use Levenshtein distance for better results
-        if len(query_clean) > 5 and len(result_clean) > 5:
-            # Check if they share most of the same words
-            query_words = set(query_clean.split())
-            result_words = set(result_clean.split())
-            if len(query_words.intersection(result_words)) >= len(query_words) * 0.7:
-                return True
+        a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+        c = 2 * asin(sqrt(a))
 
-        return False
+        return R * c
 
-    def analyze_web_content(self, search_results: List[Dict[str, Any]], business_type: str) -> Tuple[
-        List[str], List[str], Dict]:
-        """Analyze web search results for business signals and company info"""
-        b2c_signals_found = []
-        b2b_signals_found = []
-        company_info = {
-            "size_indicators": [],
-            "employee_count": None,
-            "revenue": None,
-            "description": None
+    def extract_coordinates(self, place_data: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+        """Extract coordinates from place data"""
+        if "latitude" in place_data and "longitude" in place_data:
+            return (place_data["latitude"], place_data["longitude"])
+        elif "gps_coordinates" in place_data:
+            coords = place_data["gps_coordinates"]
+            if isinstance(coords, dict):
+                return (coords.get("latitude"), coords.get("longitude"))
+        return None
+
+    def analyze_financial_data(self, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Extract financial information from search results"""
+        financial_data = {
+            "revenue_mentions": [],
+            "employee_mentions": [],
+            "funding_mentions": [],
+            "financial_health": "unknown"
         }
 
         for result in search_results:
-            # Combine title, snippet, and any other text
             content = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
 
-            # Look for B2C signals
-            for signal in self.b2c_indicators:
-                if signal in content:
-                    b2c_signals_found.append(signal)
+            # Look for revenue mentions
+            revenue_patterns = [
+                r'\$?([\d,]+\.?\d*)\s*(million|billion|m|b)\s*(revenue|turnover|sales)',
+                r'(revenue|turnover|sales)\s*of\s*\$?([\d,]+\.?\d*)\s*(million|billion|m|b)',
+                r'annual\s*(revenue|turnover|sales).*?\$?([\d,]+\.?\d*)\s*(million|billion|m|b)'
+            ]
 
-            # Look for B2B signals
-            for signal in self.b2b_indicators:
-                if signal in content:
-                    b2b_signals_found.append(signal)
+            for pattern in revenue_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    financial_data["revenue_mentions"].extend(matches)
 
-            # Extract company size information
-            for size, indicators in self.size_indicators.items():
-                for indicator in indicators:
-                    if indicator in content:
-                        company_info["size_indicators"].append(size)
+            # Look for employee counts
+            employee_patterns = [
+                r'([\d,]+)\s*employees',
+                r'([\d,]+)\s*staff',
+                r'team\s*of\s*([\d,]+)',
+                r'workforce\s*of\s*([\d,]+)'
+            ]
 
-            # Look for employee count
-            employee_match = re.search(r'(\d+[\d,]*)\s*employees', content)
-            if employee_match and not company_info["employee_count"]:
-                company_info["employee_count"] = employee_match.group(1)
+            for pattern in employee_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                if matches:
+                    financial_data["employee_mentions"].extend(matches)
 
-            # Look for revenue
-            revenue_match = re.search(r'\$(\d+[\d,\.]*)\s*(million|billion|M|B)', content)
-            if revenue_match and not company_info["revenue"]:
-                company_info["revenue"] = f"${revenue_match.group(1)} {revenue_match.group(2)}"
+            # Look for funding information
+            if any(term in content for term in ["funding", "investment", "raised", "series"]):
+                financial_data["funding_mentions"].append(result.get('snippet', ''))
 
-        # Deduplicate
-        b2c_signals_found = list(set(b2c_signals_found))
-        b2b_signals_found = list(set(b2b_signals_found))
-        company_info["size_indicators"] = list(set(company_info["size_indicators"]))
+        # Analyze financial health
+        positive_terms = ["growth", "profit", "expansion", "record", "increase"]
+        negative_terms = ["loss", "decline", "layoff", "restructuring", "bankruptcy"]
 
-        return b2c_signals_found, b2b_signals_found, company_info
+        positive_count = sum(1 for result in search_results
+                             for term in positive_terms
+                             if term in result.get('snippet', '').lower())
+        negative_count = sum(1 for result in search_results
+                             for term in negative_terms
+                             if term in result.get('snippet', '').lower())
 
-    async def validate_company(self,
-                               company: CompanyEntry,
-                               country: str,
-                               business_type: str,
-                               mode: ValidationMode = ValidationMode.FULL,
-                               serper_client: SerperClient = None) -> ValidationResult:
-        """Validate a single company"""
+        if positive_count > negative_count * 2:
+            financial_data["financial_health"] = "positive"
+        elif negative_count > positive_count * 2:
+            financial_data["financial_health"] = "concerning"
+        else:
+            financial_data["financial_health"] = "stable"
+
+        return financial_data
+
+    def analyze_csr_evidence(self, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze CSR/ESG evidence from search results"""
+        csr_data = {
+            "programs": [],
+            "focus_areas": [],
+            "certifications": [],
+            "evidence_snippets": []
+        }
+
+        # Define focus area keywords
+        focus_areas_map = {
+            "children": ["children", "kids", "youth", "school", "education"],
+            "environment": ["environment", "sustainability", "green", "carbon", "climate"],
+            "community": ["community", "local", "neighborhood", "volunteer"],
+            "health": ["health", "medical", "hospital", "wellness", "mental health"],
+            "diversity": ["diversity", "inclusion", "equity", "women", "minorities"]
+        }
+
+        # Certification keywords
+        certifications = ["b-corp", "b corp", "iso 26000", "iso 14001", "leed", "fair trade"]
+
+        for result in search_results:
+            content = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
+
+            # Check for CSR indicators
+            if any(indicator in content for indicator in self.csr_indicators):
+                csr_data["evidence_snippets"].append({
+                    "source": result.get('link', ''),
+                    "snippet": result.get('snippet', ''),
+                    "title": result.get('title', '')
+                })
+
+                # Extract focus areas
+                for area, keywords in focus_areas_map.items():
+                    if any(keyword in content for keyword in keywords):
+                        if area not in csr_data["focus_areas"]:
+                            csr_data["focus_areas"].append(area)
+
+                # Check for certifications
+                for cert in certifications:
+                    if cert in content and cert not in csr_data["certifications"]:
+                        csr_data["certifications"].append(cert)
+
+        return csr_data
+
+    async def validate_company_comprehensive(
+            self,
+            company: EnhancedCompanyEntry,
+            criteria: SearchCriteria,
+            mode: EnhancedValidationMode = EnhancedValidationMode.COMPREHENSIVE
+    ) -> EnhancedValidationResult:
+        """Comprehensive validation with all available data sources"""
         start_time = time.time()
 
-        result = ValidationResult(
+        result = EnhancedValidationResult(
             company_name=company.name,
-            country=country,
-            business_type=business_type,
+            country=criteria.location.countries[0] if criteria.location.countries else "Unknown",
+            business_type=company.business_type,
             industry=company.industry_category,
             original_confidence=company.confidence,
             validation_status="unverified",
             validation_mode=mode.value,
             confidence_after_validation=company.confidence,
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().isoformat(),
+            data_sources=[]
         )
 
-        # Skip validation mode
-        if mode == ValidationMode.SKIP:
-            result.validation_status = "verified" if company.confidence in ["absolute", "high"] else "unverified"
-            result.validation_reason = "Validation skipped"
+        async with EnhancedSerperClient(self.serper_api_key) as client:
+            validation_tasks = []
+
+            # Places/Maps validation for location
+            if mode in [EnhancedValidationMode.PLACES_ONLY, EnhancedValidationMode.FULL,
+                        EnhancedValidationMode.COMPREHENSIVE]:
+                validation_tasks.append(self._validate_location(company, criteria, client, result, mode))
+
+            # Web search for company info and CSR
+            if mode in [EnhancedValidationMode.WEB_ONLY, EnhancedValidationMode.FULL,
+                        EnhancedValidationMode.COMPREHENSIVE]:
+                validation_tasks.append(self._validate_web_presence(company, criteria, client, result))
+
+            # News search for recent events
+            if mode in [EnhancedValidationMode.NEWS_ONLY, EnhancedValidationMode.COMPREHENSIVE]:
+                validation_tasks.append(self._validate_recent_events(company, criteria, client, result))
+
+            # Execute all validation tasks
+            if validation_tasks:
+                await asyncio.gather(*validation_tasks)
+
+            # Calculate final validation score
+            result = self._calculate_validation_score(result, criteria)
+
+            # Determine final status
+            if result.validation_score >= 80:
+                result.validation_status = "verified"
+                result.confidence_after_validation = "high"
+            elif result.validation_score >= 60:
+                result.validation_status = "partial"
+                result.confidence_after_validation = "medium"
+            elif result.validation_score >= 40:
+                result.validation_status = "unverified"
+                result.confidence_after_validation = "low"
+            else:
+                result.validation_status = "rejected"
+                result.confidence_after_validation = "low"
+
             result.processing_time = time.time() - start_time
-            return result
-
-        # Need Serper client for other modes
-        if not serper_client:
-            result.validation_reason = "No Serper client provided"
-            return result
-
-        # Places API validation
-        if mode in [ValidationMode.PLACES_ONLY, ValidationMode.FULL]:
-            places_query = f"{company.name} {country}"
-            places_results = await serper_client.places_search(places_query, country)
-            result.serper_queries_used += 1
-
-            if places_results:
-                result.places_found = True
-                result.places_results = places_results
-
-                # Check for exact match
-                for place in places_results[:5]:  # Check top 5 results
-                    place_name = place.get("title", "")
-                    if self.is_exact_match(company.name, place_name):
-                        result.exact_match = True
-                        result.place_details = place
-                        result.validation_status = "verified"
-                        result.confidence_after_validation = "high"
-                        result.validation_reason = f"Exact match found: {place_name}"
-                        break
-
-                if not result.exact_match:
-                    # Check if any results are close enough
-                    if len(places_results) > 0:
-                        result.validation_status = "unverified"
-                        result.confidence_after_validation = "medium"
-                        result.validation_reason = f"Found {len(places_results)} places but no exact match"
-                    else:
-                        result.validation_status = "rejected"
-                        result.confidence_after_validation = "low"
-                        result.validation_reason = "Not found in Places search"
-            else:
-                result.places_found = False
-                if mode == ValidationMode.PLACES_ONLY:
-                    result.validation_status = "rejected"
-                    result.confidence_after_validation = "low"
-                    result.validation_reason = "No results in Places API"
-
-        # Web search validation
-        if mode in [ValidationMode.WEB_ONLY, ValidationMode.FULL]:
-            # Skip web search if already verified by places
-            if result.validation_status == "verified" and mode == ValidationMode.FULL:
-                result.processing_time = time.time() - start_time
-                return result
-
-            # Construct web search query based on business type
-            if business_type == "B2C":
-                web_query = f'"{company.name}" {country} shop store retail consumer'
-            else:
-                web_query = f'"{company.name}" {country} {business_type}'
-
-            web_results = await serper_client.web_search(web_query, country)
-            result.web_search_performed = True
-            result.web_results = web_results
-            result.serper_queries_used += 1
-
-            if web_results:
-                # Analyze content
-                b2c_signals, b2b_signals, company_info = self.analyze_web_content(web_results, business_type)
-                result.b2c_signals = b2c_signals
-                result.b2b_signals = b2b_signals
-                result.company_size_info = company_info
-
-                # Determine validation based on signals
-                if business_type == "B2C":
-                    if len(b2c_signals) > len(b2b_signals) and len(b2c_signals) > 0:
-                        result.validation_status = "verified"
-                        result.confidence_after_validation = "high" if len(b2c_signals) >= 3 else "medium"
-                        result.validation_reason = f"B2C signals found: {', '.join(b2c_signals[:3])}"
-                    elif len(b2b_signals) > len(b2c_signals):
-                        result.validation_status = "rejected"
-                        result.validation_reason = f"B2B signals found: {', '.join(b2b_signals[:3])}"
-                    else:
-                        result.validation_status = "unverified"
-                        result.validation_reason = "Insufficient signals to determine business type"
-                else:
-                    # For B2B or other types, just verify existence
-                    if len(web_results) > 0:
-                        result.validation_status = "verified"
-                        result.confidence_after_validation = "medium"
-                        result.validation_reason = f"Found in web search with {len(web_results)} results"
-
-        result.processing_time = time.time() - start_time
-        self.progress.update(result)
 
         return result
 
-    def should_validate(self, company: CompanyEntry, confidence_filter: ConfidenceFilter) -> bool:
-        """Check if a company should be validated based on confidence filter"""
-        if confidence_filter == ConfidenceFilter.ALL:
-            return True
-        elif confidence_filter == ConfidenceFilter.LOW_ONLY:
-            return company.confidence == "low"
-        elif confidence_filter == ConfidenceFilter.MEDIUM_AND_LOW:
-            return company.confidence in ["medium", "low"]
-        elif confidence_filter == ConfidenceFilter.HIGH_AND_BELOW:
-            return company.confidence in ["high", "medium", "low"]
-        return False
+    async def _validate_location(self, company: EnhancedCompanyEntry, criteria: SearchCriteria,
+                                 client: EnhancedSerperClient, result: EnhancedValidationResult,
+                                 mode: EnhancedValidationMode):
+        """Validate company location using Places and Maps APIs"""
+        # Search query
+        location = criteria.location.cities[0] if criteria.location.cities else criteria.location.countries[0]
+        query = f"{company.name} {location}"
 
-    async def validate_batch(self,
-                             companies: List[CompanyEntry],
-                             country: str,
-                             business_type: str,
-                             mode: ValidationMode = ValidationMode.FULL,
-                             confidence_filter: ConfidenceFilter = ConfidenceFilter.ALL,
-                             parallel_limit: int = 5) -> List[ValidationResult]:
-        """Validate a batch of companies with rate limiting"""
+        # Places search
+        places_results = await client.places_search(query, location, criteria.location.countries[0])
+        result.serper_places_results = places_results
+        result.serper_queries_used += 1
+        result.data_sources.append("serper_places")
+
+        if places_results:
+            # Check for exact matches
+            for place in places_results[:5]:
+                place_name = place.get("title", "").lower()
+                company_name = company.name.lower()
+
+                # Fuzzy matching
+                if company_name in place_name or place_name in company_name:
+                    result.location_verified = True
+                    result.headquarters_confirmed = {
+                        "name": place.get("title"),
+                        "address": place.get("address"),
+                        "coordinates": self.extract_coordinates(place),
+                        "phone": place.get("phoneNumber"),
+                        "type": place.get("type", [])
+                    }
+                    break
+
+            # Check proximity if required
+            if criteria.location.proximity and result.headquarters_confirmed:
+                coords = result.headquarters_confirmed.get("coordinates")
+                if coords:
+                    # Calculate distance from target location
+                    # This would require geocoding the target location
+                    result.proximity_matches = [{
+                        "location": result.headquarters_confirmed["address"],
+                        "distance_km": "Calculated based on coordinates"
+                    }]
+
+        # Maps search for additional detail if needed
+        if mode == EnhancedValidationMode.COMPREHENSIVE and not result.location_verified:
+            maps_results = await client.maps_search(query, location)
+            result.serper_maps_results = maps_results
+            result.serper_queries_used += 1
+            # Process maps results similarly
+
+    async def _validate_web_presence(self, company: EnhancedCompanyEntry, criteria: SearchCriteria,
+                                     client: EnhancedSerperClient, result: EnhancedValidationResult):
+        """Validate company info and CSR through web search"""
+        # General company search
+        query = f'"{company.name}" {company.industry_category}'
+        web_results = await client.web_search(query, criteria.location.countries[0])
+        result.serper_web_results = web_results
+        result.serper_queries_used += 1
+        result.data_sources.append("serper_web")
+
+        if web_results:
+            # Analyze financial data
+            financial_data = self.analyze_financial_data(web_results)
+            if financial_data["revenue_mentions"]:
+                result.revenue_verified = True
+                result.revenue_data = financial_data
+            if financial_data["employee_mentions"]:
+                result.employee_count_verified = True
+                result.employee_data = financial_data
+
+            # Look for negative signals
+            negative_found = []
+            for res in web_results:
+                content = f"{res.get('title', '')} {res.get('snippet', '')}".lower()
+                for indicator in self.negative_indicators:
+                    if indicator in content:
+                        negative_found.append(indicator)
+
+            if negative_found:
+                result.negative_signals = list(set(negative_found))
+
+        # CSR-specific search if required
+        if criteria.behavioral.csr_focus_areas or criteria.behavioral.certifications:
+            csr_query = f'"{company.name}" "corporate social responsibility" sustainability CSR'
+            csr_results = await client.web_search(csr_query, criteria.location.countries[0])
+            result.serper_queries_used += 1
+
+            if csr_results:
+                csr_data = self.analyze_csr_evidence(csr_results)
+                result.csr_programs_found = csr_data["programs"]
+                result.csr_evidence = csr_data["evidence_snippets"]
+                result.certifications_verified = csr_data["certifications"]
+
+    async def _validate_recent_events(self, company: EnhancedCompanyEntry, criteria: SearchCriteria,
+                                      client: EnhancedSerperClient, result: EnhancedValidationResult):
+        """Validate recent events and news"""
+        query = f'"{company.name}"'
+        news_results = await client.news_search(query, criteria.location.countries[0], time_range="month")
+        result.serper_news_results = news_results
+        result.serper_queries_used += 1
+        result.data_sources.append("serper_news")
+
+        if news_results:
+            recent_events = []
+            leadership_changes = []
+            growth_signals = []
+
+            for news in news_results:
+                title = news.get("title", "").lower()
+                snippet = news.get("snippet", "").lower()
+                content = f"{title} {snippet}"
+
+                # Categorize news
+                if any(term in content for term in ["ceo", "president", "executive", "appoint", "hire"]):
+                    leadership_changes.append({
+                        "title": news.get("title"),
+                        "date": news.get("date"),
+                        "source": news.get("source")
+                    })
+
+                if any(term in content for term in self.growth_indicators):
+                    growth_signals.append(news.get("title"))
+
+                # Look for specific events
+                if any(term in content for term in criteria.behavioral.recent_events):
+                    recent_events.append({
+                        "title": news.get("title"),
+                        "date": news.get("date"),
+                        "source": news.get("source"),
+                        "link": news.get("link")
+                    })
+
+            result.recent_events_found = recent_events
+            result.leadership_changes = leadership_changes
+            result.growth_signals = growth_signals
+
+    def _calculate_validation_score(self, result: EnhancedValidationResult,
+                                    criteria: SearchCriteria) -> EnhancedValidationResult:
+        """Calculate comprehensive validation score"""
+        score = 0
+        max_score = 0
+        details = {}
+
+        # Location verification (25 points)
+        max_score += 25
+        if result.location_verified:
+            score += 25
+            details["location"] = "Verified"
+        elif result.serper_places_results:
+            score += 10
+            details["location"] = "Partial match"
+        else:
+            details["location"] = "Not verified"
+
+        # Financial verification (20 points)
+        max_score += 20
+        if result.revenue_verified and result.employee_count_verified:
+            score += 20
+            details["financial"] = "Fully verified"
+        elif result.revenue_verified or result.employee_count_verified:
+            score += 10
+            details["financial"] = "Partially verified"
+        else:
+            details["financial"] = "Not verified"
+
+        # CSR verification (30 points if CSR criteria exist)
+        if criteria.behavioral.csr_focus_areas or criteria.behavioral.certifications:
+            max_score += 30
+            csr_score = 0
+
+            # CSR programs found (15 points)
+            if result.csr_evidence:
+                csr_score += 15
+
+            # Matching focus areas (10 points)
+            if result.csr_programs_found and criteria.behavioral.csr_focus_areas:
+                matching_areas = set(result.csr_programs_found) & set(criteria.behavioral.csr_focus_areas)
+                if matching_areas:
+                    csr_score += 10
+
+            # Certifications (5 points)
+            if result.certifications_verified:
+                csr_score += 5
+
+            score += csr_score
+            details["csr"] = f"{csr_score}/30 points"
+
+        # Recent events (15 points)
+        max_score += 15
+        if result.recent_events_found:
+            score += 15
+            details["recent_events"] = "Found"
+        elif result.serper_news_results:
+            score += 5
+            details["recent_events"] = "News found but no matching events"
+        else:
+            details["recent_events"] = "No recent news"
+
+        # Negative signals penalty (up to -20 points)
+        if result.negative_signals:
+            penalty = min(20, len(result.negative_signals) * 5)
+            score -= penalty
+            details["negative_signals"] = f"-{penalty} points"
+
+        # Growth signals bonus (up to +10 points)
+        if result.growth_signals:
+            bonus = min(10, len(result.growth_signals) * 2)
+            score += bonus
+            max_score += 10
+            details["growth_bonus"] = f"+{bonus} points"
+
+        # Calculate final score
+        result.validation_score = max(0, (score / max_score) * 100) if max_score > 0 else 0
+        result.validation_details = details
+
+        return result
+
+    async def validate_batch_enhanced(
+            self,
+            companies: List[EnhancedCompanyEntry],
+            criteria: SearchCriteria,
+            mode: EnhancedValidationMode = EnhancedValidationMode.FULL,
+            parallel_limit: int = 5
+    ) -> List[EnhancedValidationResult]:
+        """Validate a batch of companies with enhanced criteria"""
         results = []
 
-        # Filter companies based on confidence
-        companies_to_validate = [c for c in companies if self.should_validate(c, confidence_filter)]
-        companies_skipped = [c for c in companies if not self.should_validate(c, confidence_filter)]
+        # Process in batches
+        for i in range(0, len(companies), parallel_limit):
+            batch = companies[i:i + parallel_limit]
 
-        print(f"Validating {len(companies_to_validate)} companies (skipping {len(companies_skipped)})")
+            # Create validation tasks
+            tasks = []
+            for company in batch:
+                task = self.validate_company_comprehensive(company, criteria, mode)
+                tasks.append(task)
 
-        # Add skipped companies as verified
-        for company in companies_skipped:
-            result = ValidationResult(
-                company_name=company.name,
-                country=country,
-                business_type=business_type,
-                industry=company.industry_category,
-                original_confidence=company.confidence,
-                validation_status="verified",
-                validation_mode="skipped",
-                confidence_after_validation=company.confidence,
-                validation_reason="Skipped due to confidence filter",
-                timestamp=datetime.now().isoformat()
-            )
-            results.append(result)
+            # Execute batch
+            batch_results = await asyncio.gather(*tasks)
+            results.extend(batch_results)
 
-        # Skip validation mode or no companies to validate
-        if mode == ValidationMode.SKIP or not companies_to_validate:
-            for company in companies_to_validate:
-                result = await self.validate_company(company, country, business_type, mode)
-                results.append(result)
-            return results
+            # Rate limiting
+            if i + parallel_limit < len(companies):
+                await asyncio.sleep(1)
 
-        # Validate with Serper
-        async with SerperClient(self.serper_api_key) as serper_client:
-            # Process in batches to respect rate limits
-            for i in range(0, len(companies_to_validate), parallel_limit):
-                batch = companies_to_validate[i:i + parallel_limit]
-
-                # Create validation tasks
-                tasks = []
-                for company in batch:
-                    task = self.validate_company(company, country, business_type, mode, serper_client)
-                    tasks.append(task)
-
-                # Wait for batch to complete
-                batch_results = await asyncio.gather(*tasks)
-                results.extend(batch_results)
-
-                # Small delay between batches to avoid rate limits
-                if i + parallel_limit < len(companies_to_validate):
-                    await asyncio.sleep(1)
-
-                # Progress update
-                validated_so_far = len(companies_skipped) + i + len(batch)
-                print(f"Progress: {validated_so_far}/{len(companies)} validated")
+            # Progress
+            print(f"Validated {min(i + parallel_limit, len(companies))}/{len(companies)} companies")
 
         return results
 
-    def get_progress_summary(self) -> Dict[str, Any]:
-        """Get validation progress summary"""
-        return {
-            "total_processed": self.progress.total_processed,
-            "verified": self.progress.verified,
-            "rejected": self.progress.rejected,
-            "unverified": self.progress.unverified,
-            "serper_calls": self.progress.serper_calls,
-            "estimated_cost": round(self.progress.estimated_cost, 3),
-            "elapsed_time": round(self.progress.elapsed_time, 2),
-            "verification_rate": round(self.progress.verified / max(1, self.progress.total_processed) * 100, 1)
-        }
 
-
-# Test function
-async def test_validation_agent():
-    """Test the validation agent"""
-    from search_strategist_agent import CompanyEntry
-
-    # Test companies
-    test_companies = [
-        CompanyEntry(
-            name="Walmart",
-            confidence="absolute",
-            operates_in_country=True,
-            business_type="B2C",
-            industry_category="Retail",
-            estimated_revenue="$500B+",
-            estimated_employees="1000+",
-            reasoning="Major US retailer"
-        ),
-        CompanyEntry(
-            name="Local Shop Berlin",
-            confidence="low",
-            operates_in_country=True,
-            business_type="B2C",
-            industry_category="Retail",
-            reasoning="Unknown local shop"
-        )
-    ]
-
-    # Initialize agent
-    serper_key = os.getenv("SERPER_API_KEY", "your-serper-key")
-    agent = ValidationAgent(serper_key)
-
-    # Test validation
-    results = await agent.validate_batch(
-        companies=test_companies,
-        country="United States",
-        business_type="B2C",
-        mode=ValidationMode.FULL,
-        confidence_filter=ConfidenceFilter.ALL
-    )
-
-    # Print results
-    for result in results:
-        print(f"\n{result.company_name}:")
-        print(f"  Status: {result.validation_status}")
-        print(f"  Confidence: {result.original_confidence} → {result.confidence_after_validation}")
-        print(f"  Reason: {result.validation_reason}")
-        print(f"  Serper queries: {result.serper_queries_used}")
-
-
-if __name__ == "__main__":
-    asyncio.run(test_validation_agent())
+# Backward compatibility
+ValidationAgent = EnhancedValidationAgent
+ValidationMode = EnhancedValidationMode
+ValidationResult = EnhancedValidationResult

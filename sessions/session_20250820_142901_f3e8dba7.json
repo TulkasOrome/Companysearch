@@ -1,0 +1,38 @@
+{
+  "session_id": "session_20250820_142901_f3e8dba7",
+  "created_at": "2025-08-20T14:29:01.077870",
+  "last_activity": "2025-08-20T14:31:01.403146",
+  "current_step": "search_config",
+  "search_criteria": {
+    "location": "LocationCriteria(countries=['Australia', 'Canada', 'Singapore'], states=[], cities=[], regions=[], proximity=None, exclusions=[])",
+    "financial": "FinancialCriteria(revenue_min=5000000.0, revenue_max=100000000.0, revenue_currency='AUD', giving_capacity_min=20000.0, growth_rate_min=None, profitable=None)",
+    "organizational": "OrganizationalCriteria(employee_count_min=50, employee_count_max=1000, employee_count_by_location=None, office_types=['Headquarters', 'Major Office'], company_stage=None)",
+    "behavioral": "BehavioralSignals(csr_programs=[], csr_focus_areas=['Children', 'Community'], certifications=['Carbon Neutral', 'ISO 26000'], recent_events=['Office Move', 'CSR Launch'], technology_stack=[], esg_maturity='Basic')",
+    "business_types": [
+      "B2B",
+      "B2C"
+    ],
+    "industries": [],
+    "keywords": [],
+    "custom_prompt": null,
+    "excluded_industries": [],
+    "excluded_companies": [],
+    "excluded_behaviors": [
+      "Recent Misconduct"
+    ]
+  },
+  "search_results_count": 0,
+  "search_results": [],
+  "validation_results_count": 0,
+  "steps_completed": {
+    "search_config": false,
+    "search_execution": false,
+    "validation": false,
+    "export": false
+  },
+  "total_cost": 0.0,
+  "api_calls": {
+    "gpt4": 0,
+    "serper": 0
+  }
+}

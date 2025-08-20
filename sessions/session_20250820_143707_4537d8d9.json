@@ -1,0 +1,298 @@
+{
+  "session_id": "session_20250820_143707_4537d8d9",
+  "created_at": "2025-08-20T14:37:07.227828",
+  "last_activity": "2025-08-20T14:42:05.651584",
+  "current_step": "search_execution",
+  "search_criteria": {
+    "location": {
+      "countries": [
+        "Australia"
+      ],
+      "states": [],
+      "cities": [],
+      "regions": [],
+      "proximity": null,
+      "exclusions": []
+    },
+    "financial": {
+      "revenue_min": null,
+      "revenue_max": 99000000.0,
+      "revenue_currency": "AUD",
+      "giving_capacity_min": null,
+      "growth_rate_min": null,
+      "profitable": null
+    },
+    "organizational": {
+      "employee_count_min": 50,
+      "employee_count_max": 1000,
+      "employee_count_by_location": null,
+      "office_types": [],
+      "company_stage": null
+    },
+    "behavioral": {
+      "csr_programs": [],
+      "csr_focus_areas": [],
+      "certifications": [],
+      "recent_events": [],
+      "technology_stack": [],
+      "esg_maturity": null
+    },
+    "business_types": [
+      "B2B",
+      "B2C"
+    ],
+    "industries": [
+      {
+        "name": "Construction",
+        "priority": 1
+      }
+    ],
+    "keywords": [],
+    "custom_prompt": null,
+    "excluded_industries": [],
+    "excluded_companies": [],
+    "excluded_behaviors": [
+      "Recent Misconduct"
+    ]
+  },
+  "search_results_count": 4,
+  "search_results": [
+    {
+      "location": "Australia",
+      "timestamp": "2025-08-20T14:38:01.279535",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Australia"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": null,
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": 5000000.0,
+          "revenue_max": 100000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": 20000.0,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [
+            "Headquarters",
+            "Major Office"
+          ],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [
+            "Children",
+            "Community"
+          ],
+          "certifications": [],
+          "recent_events": [
+            "Office Move",
+            "CSR Launch"
+          ],
+          "technology_stack": [],
+          "esg_maturity": "Basic"
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    },
+    {
+      "location": "Australia",
+      "timestamp": "2025-08-20T14:38:55.730642",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Australia"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": null,
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": 5000000.0,
+          "revenue_max": 100000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": 20000.0,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [
+            "Headquarters",
+            "Major Office"
+          ],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [],
+          "certifications": [],
+          "recent_events": [],
+          "technology_stack": [],
+          "esg_maturity": null
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    },
+    {
+      "location": "Australia",
+      "timestamp": "2025-08-20T14:39:54.002995",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Australia"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": null,
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": null,
+          "revenue_max": 99000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": null,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [],
+          "certifications": [],
+          "recent_events": [],
+          "technology_stack": [],
+          "esg_maturity": null
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    },
+    {
+      "location": "Australia",
+      "timestamp": "2025-08-20T14:42:05.651584",
+      "companies": [],
+      "criteria": {
+        "location": {
+          "countries": [
+            "Australia"
+          ],
+          "states": [],
+          "cities": [],
+          "regions": [],
+          "proximity": null,
+          "exclusions": []
+        },
+        "financial": {
+          "revenue_min": null,
+          "revenue_max": 99000000.0,
+          "revenue_currency": "AUD",
+          "giving_capacity_min": null,
+          "growth_rate_min": null,
+          "profitable": null
+        },
+        "organizational": {
+          "employee_count_min": 50,
+          "employee_count_max": 1000,
+          "employee_count_by_location": null,
+          "office_types": [],
+          "company_stage": null
+        },
+        "behavioral": {
+          "csr_programs": [],
+          "csr_focus_areas": [],
+          "certifications": [],
+          "recent_events": [],
+          "technology_stack": [],
+          "esg_maturity": null
+        },
+        "business_types": [
+          "B2B",
+          "B2C"
+        ],
+        "industries": [
+          {
+            "name": "Construction",
+            "priority": 1
+          }
+        ],
+        "keywords": [],
+        "custom_prompt": null,
+        "excluded_industries": [],
+        "excluded_companies": [],
+        "excluded_behaviors": [
+          "Recent Misconduct"
+        ]
+      }
+    }
+  ],
+  "validation_results_count": 0,
+  "steps_completed": {
+    "search_config": false,
+    "search_execution": true,
+    "validation": false,
+    "export": false
+  },
+  "total_cost": 0.06,
+  "api_calls": {
+    "gpt4": 3,
+    "serper": 0
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "test_date": "2025-08-20T15:23:20.645436",
+  "results": [
+    {
+      "use_case": "RMH Sydney",
+      "companies_found": 0,
+      "qualifying_companies": 0,
+      "validation_results": []
+    },
+    {
+      "use_case": "Guide Dogs Victoria",
+      "tier_a_found": 15,
+      "tier_a_qualifying": 0,
+      "tier_b_found": 15
+    },
+    {
+      "use_case": "Professional Services",
+      "categories": {
+        "Big 4 Firms": {
+          "found": 5,
+          "companies": [
+            "Deloitte",
+            "PricewaterhouseCoopers (PwC)",
+            "Ernst & Young (EY)",
+            "KPMG",
+            "BDO Global"
+          ]
+        },
+        "Mid-Tier Firms": {
+          "found": 10,
+          "companies": [
+            "Pitcher Partners",
+            "William Buck",
+            "BDO Australia",
+            "HLB Mann Judd",
+            "PKF Australia"
+          ]
+        },
+        "Boutique Firms": {
+          "found": 10,
+          "companies": [
+            "Chan & Naylor",
+            "Kelly+Partners",
+            "Bentleys NSW",
+            "Hall Chadwick",
+            "William Buck"
+          ]
+        }
+      }
+    },
+    {
+      "use_case": "Real Estate",
+      "segments": {
+        "Commercial Real Estate": {
+          "found": 10,
+          "avg_score": 85.0
+        },
+        "Residential Developers": {
+          "found": 10,
+          "avg_score": 70.0
+        }
+      }
+    },
+    {
+      "use_case": "Custom Prompts",
+      "scenarios": [
+        {
+          "scenario": "Award Winners",
+          "companies_found": 5,
+          "sample": [
+            "Patagonia, Inc.",
+            "Salesforce, Inc.",
+            "Ben & Jerry's Homemade Holdings Inc."
+          ]
+        },
+        {
+          "scenario": "Tech Innovators",
+          "companies_found": 5,
+          "sample": [
+            "UiPath",
+            "DataRobot",
+            "Snyk"
+          ]
+        },
+        {
+          "scenario": "Local Heroes",
+          "companies_found": 5,
+          "sample": [
+            "Haigh's Chocolates",
+            "Coopers Brewery",
+            "Dymocks"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,771 @@
+{
+  "summary": {
+    "total_tests": 35,
+    "successful": 35,
+    "failed": 0,
+    "execution_date": "2025-08-20T15:15:32.730376"
+  },
+  "test_results": [
+    {
+      "test_name": "Single Country (US)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.753748,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 3,
+          "high": 2
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Apple Inc.",
+        "Microsoft Corporation",
+        "Google LLC"
+      ]
+    },
+    {
+      "test_name": "Multiple Countries (EU)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.628276,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 1,
+          "high": 4
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "SAP SE",
+        "Capgemini",
+        "Arm Holdings"
+      ]
+    },
+    {
+      "test_name": "City-Specific (Australia)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.12996,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 35.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Atlassian",
+        "Afterpay",
+        "Canva"
+      ]
+    },
+    {
+      "test_name": "Proximity Search (London 50km)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.92859,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 35.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Wise",
+        "Revolut",
+        "Deliveroo"
+      ]
+    },
+    {
+      "test_name": "Location with Exclusions",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.272787,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Salesforce",
+        "Google (Alphabet Inc.)",
+        "Snap Inc."
+      ]
+    },
+    {
+      "test_name": "Revenue $10M-$50M",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.610287,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Basecamp",
+        "Aha! Labs Inc.",
+        "Chartio"
+      ]
+    },
+    {
+      "test_name": "Revenue $100M+",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.688523,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Salesforce",
+        "Adobe Inc.",
+        "Intuit Inc."
+      ]
+    },
+    {
+      "test_name": "Revenue + Giving Capacity",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.044365,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Smartsheet Inc.",
+        "Blackbaud, Inc.",
+        "Alarm.com Holdings, Inc."
+      ]
+    },
+    {
+      "test_name": "High Growth + Profitable",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.301063,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Salesforce",
+        "Adobe Inc.",
+        "Intuit Inc."
+      ]
+    },
+    {
+      "test_name": "Australian Revenue (AUD)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.651196,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Atlassian Pty Ltd (SMB Division)",
+        "MYOB Group Pty Ltd",
+        "SafetyCulture Pty Ltd"
+      ]
+    },
+    {
+      "test_name": "Small Companies (10-50 emp)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.06968,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 45.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Wolf & Badger",
+        "The Present Finder",
+        "Trouva"
+      ]
+    },
+    {
+      "test_name": "Medium Companies (51-500 emp)",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.459004,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 45.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "The Works Stores Ltd",
+        "Oliver Bonas Limited",
+        "Richer Sounds"
+      ]
+    },
+    {
+      "test_name": "Large Companies with HQ",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 12.855298,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 4,
+          "high": 1
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 45.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Tesco PLC",
+        "Marks & Spencer Group plc",
+        "Sainsbury's (J Sainsbury plc)"
+      ]
+    },
+    {
+      "test_name": "Location-specific headcount",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.980202,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 1,
+          "high": 4
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Marks & Spencer",
+        "John Lewis & Partners",
+        "JD Sports Fashion plc"
+      ]
+    },
+    {
+      "test_name": "Growth Stage Companies",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.117399,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 45.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Marks & Spencer",
+        "John Lewis Partnership",
+        "Next plc"
+      ]
+    },
+    {
+      "test_name": "CSR: Children & Education",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.675619,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 1,
+          "high": 4
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 65.0,
+        "tier_distribution": {
+          "B": 5
+        }
+      },
+      "sample_companies": [
+        "Khan Academy",
+        "Duolingo",
+        "Chegg Inc."
+      ]
+    },
+    {
+      "test_name": "Environmental CSR + Certs",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.868193,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 75.0,
+        "tier_distribution": {
+          "B": 5
+        }
+      },
+      "sample_companies": [
+        "Salesforce",
+        "Microsoft",
+        "Adobe"
+      ]
+    },
+    {
+      "test_name": "B-Corp Certified",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.907045,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 60.0,
+        "tier_distribution": {
+          "B": 5
+        }
+      },
+      "sample_companies": [
+        "Etsy, Inc.",
+        "Warby Parker",
+        "Allbirds, Inc."
+      ]
+    },
+    {
+      "test_name": "Recent Events Triggers",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.607558,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "MongoDB, Inc.",
+        "Cloudflare, Inc.",
+        "Smartsheet Inc."
+      ]
+    },
+    {
+      "test_name": "Specific Tech Stack",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 7.876771,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 50.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "MongoDB, Inc.",
+        "Cloudflare, Inc.",
+        "Datadog, Inc."
+      ]
+    },
+    {
+      "test_name": "B2C Retail/Food",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.424567,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Walmart Inc.",
+        "Target Corporation",
+        "Kroger Co."
+      ]
+    },
+    {
+      "test_name": "B2B Tech",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 8.847338,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Atlassian",
+        "ServiceNow",
+        "Splunk"
+      ]
+    },
+    {
+      "test_name": "D2C Brands",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.02756,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 1,
+          "high": 4
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Procter & Gamble",
+        "The Est\u00e9e Lauder Companies",
+        "Kellogg Company"
+      ]
+    },
+    {
+      "test_name": "Professional Services",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.210772,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 3,
+          "high": 2
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Deloitte LLP",
+        "Ernst & Young LLP (EY US)",
+        "KPMG LLP (US)"
+      ]
+    },
+    {
+      "test_name": "Real Estate",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.536625,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "absolute": 2,
+          "high": 3
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 30.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "CBRE Group, Inc.",
+        "JLL (Jones Lang LaSalle Incorporated)",
+        "Cushman & Wakefield plc"
+      ]
+    },
+    {
+      "test_name": "RMH Sydney Full ICP",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.530616,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 4,
+          "medium": 1
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 81.0,
+        "tier_distribution": {
+          "A": 4,
+          "B": 1
+        }
+      },
+      "sample_companies": [
+        "Richard Crookes Constructions",
+        "Paynter Dixon",
+        "Dyldam Developments"
+      ]
+    },
+    {
+      "test_name": "Guide Dogs Victoria Tier A",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.078245,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 87.0,
+        "tier_distribution": {
+          "A": 5
+        }
+      },
+      "sample_companies": [
+        "Medibank Private Limited",
+        "Bendigo and Adelaide Bank",
+        "Australian Unity"
+      ]
+    },
+    {
+      "test_name": "Custom Prompt Search",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 10.357583,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 15.0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "Darktrace",
+        "Babylon Health",
+        "Thought Machine"
+      ]
+    },
+    {
+      "test_name": "Empty Criteria",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 12.487321,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 0,
+        "tier_distribution": {
+          "D": 5
+        }
+      },
+      "sample_companies": [
+        "The Entertainer",
+        "WHSmith",
+        "Waterstones"
+      ]
+    },
+    {
+      "test_name": "Conflicting Criteria",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.801277,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "low": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 55.0,
+        "tier_distribution": {
+          "C": 5
+        }
+      },
+      "sample_companies": [
+        "Toyota Motor Corporation",
+        "Honda Motor Co., Ltd.",
+        "Nissan Motor Co., Ltd."
+      ]
+    },
+    {
+      "test_name": "Ultra-Narrow Criteria",
+      "status": "SUCCESS",
+      "companies_found": 5,
+      "execution_time": 9.57763,
+      "analysis": {
+        "total_companies": 5,
+        "confidence_distribution": {
+          "high": 5
+        },
+        "has_financial_data": 5,
+        "has_csr_data": 5,
+        "avg_icp_score": 95.0,
+        "tier_distribution": {
+          "A": 5
+        }
+      },
+      "sample_companies": [
+        "Iceland Seafood International",
+        "Brim hf.",
+        "Samherji hf."
+      ]
+    },
+    {
+      "test_name": "Performance Test - 1 companies",
+      "status": "SUCCESS",
+      "target_count": 1,
+      "actual_count": 1,
+      "execution_time": 2.303301,
+      "time_per_company": 2.303301
+    },
+    {
+      "test_name": "Performance Test - 10 companies",
+      "status": "SUCCESS",
+      "target_count": 10,
+      "actual_count": 10,
+      "execution_time": 14.127822,
+      "time_per_company": 1.4127822
+    },
+    {
+      "test_name": "Performance Test - 25 companies",
+      "status": "SUCCESS",
+      "target_count": 25,
+      "actual_count": 0,
+      "execution_time": 29.491735,
+      "time_per_company": 29.491735
+    },
+    {
+      "test_name": "Performance Test - 50 companies",
+      "status": "SUCCESS",
+      "target_count": 50,
+      "actual_count": 0,
+      "execution_time": 25.589193,
+      "time_per_company": 25.589193
+    }
+  ]
+}

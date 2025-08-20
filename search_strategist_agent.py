@@ -1,19 +1,21 @@
-# search_strategist_agent.py
+# enhanced_search_agent.py
 
 import os
 import json
 import asyncio
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
 from enum import Enum
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, Field
+from openai import AzureOpenAI
 
 
-# Business Type Enum
+# Enhanced Business Type Enum
 class BusinessType(Enum):
     B2C = "B2C"
     B2B = "B2B"
@@ -21,625 +23,580 @@ class BusinessType(Enum):
     D2C = "D2C"
     MARKETPLACE = "Marketplace"
     HYBRID = "Hybrid"
+    PROFESSIONAL_SERVICES = "Professional Services"
+    REAL_ESTATE = "Real Estate"
 
 
-# Company size classifications
+# Enhanced Company Size Classifications
 class CompanySize(Enum):
     SMALL = "small"  # 1-50 employees or <$10M revenue
     MEDIUM = "medium"  # 51-500 employees or $10M-$100M revenue
     ENTERPRISE = "enterprise"  # 500+ employees or $100M+ revenue
-    UNKNOWN = "unknown"  # No size data available
+    UNKNOWN = "unknown"
 
 
-# Target countries configuration with population for proportional distribution
-TARGET_COUNTRIES = {
-    # North America
-    "United States": {"languages": ["en"], "region": "North America", "population": 331000000},
-    "Canada": {"languages": ["en", "fr"], "region": "North America", "population": 38000000},
-    "Mexico": {"languages": ["es", "en"], "region": "North America", "population": 128000000},
-
-    # Western Europe
-    "United Kingdom": {"languages": ["en"], "region": "Western Europe", "population": 67000000},
-    "Germany": {"languages": ["de", "en"], "region": "Western Europe", "population": 83000000},
-    "France": {"languages": ["fr", "en"], "region": "Western Europe", "population": 67000000},
-    "Netherlands": {"languages": ["nl", "en"], "region": "Western Europe", "population": 17500000},
-    "Belgium": {"languages": ["nl", "fr", "en"], "region": "Western Europe", "population": 11500000},
-    "Austria": {"languages": ["de", "en"], "region": "Western Europe", "population": 9000000},
-    "Switzerland": {"languages": ["de", "fr", "it", "en"], "region": "Western Europe", "population": 8700000},
-    "Luxembourg": {"languages": ["fr", "de", "en"], "region": "Western Europe", "population": 640000},
-
-    # Southern Europe
-    "Spain": {"languages": ["es", "en"], "region": "Southern Europe", "population": 47000000},
-    "Italy": {"languages": ["it", "en"], "region": "Southern Europe", "population": 60000000},
-    "Portugal": {"languages": ["pt", "en"], "region": "Southern Europe", "population": 10300000},
-    "Greece": {"languages": ["el", "en"], "region": "Southern Europe", "population": 10700000},
-
-    # Eastern Europe
-    "Poland": {"languages": ["pl", "en"], "region": "Eastern Europe", "population": 38000000},
-    "Romania": {"languages": ["ro", "en"], "region": "Eastern Europe", "population": 19000000},
-    "Czech Republic": {"languages": ["cs", "en"], "region": "Eastern Europe", "population": 10700000},
-    "Hungary": {"languages": ["hu", "en"], "region": "Eastern Europe", "population": 9700000},
-    "Bulgaria": {"languages": ["bg", "en"], "region": "Eastern Europe", "population": 6900000},
-    "Slovakia": {"languages": ["sk", "en"], "region": "Eastern Europe", "population": 5400000},
-    "Croatia": {"languages": ["hr", "en"], "region": "Eastern Europe", "population": 4000000},
-
-    # Nordic
-    "Denmark": {"languages": ["da", "en"], "region": "Nordic", "population": 5800000},
-    "Sweden": {"languages": ["sv", "en"], "region": "Nordic", "population": 10400000},
-    "Finland": {"languages": ["fi", "en"], "region": "Nordic", "population": 5500000},
-    "Norway": {"languages": ["no", "en"], "region": "Nordic", "population": 5400000},
-    "Iceland": {"languages": ["is", "en"], "region": "Nordic", "population": 370000},
-
-    # Asia Pacific
-    "Japan": {"languages": ["ja", "en"], "region": "Asia Pacific", "population": 125000000},
-    "South Korea": {"languages": ["ko", "en"], "region": "Asia Pacific", "population": 51700000},
-    "China": {"languages": ["zh", "en"], "region": "Asia Pacific", "population": 1412000000},
-    "India": {"languages": ["en", "hi"], "region": "Asia Pacific", "population": 1380000000},
-    "Australia": {"languages": ["en"], "region": "Asia Pacific", "population": 25700000},
-    "New Zealand": {"languages": ["en"], "region": "Asia Pacific", "population": 5100000},
-    "Singapore": {"languages": ["en", "zh"], "region": "Asia Pacific", "population": 5700000},
-    "Malaysia": {"languages": ["ms", "en"], "region": "Asia Pacific", "population": 32700000},
-    "Thailand": {"languages": ["th", "en"], "region": "Asia Pacific", "population": 70000000},
-    "Indonesia": {"languages": ["id", "en"], "region": "Asia Pacific", "population": 273000000},
-    "Philippines": {"languages": ["en", "tl"], "region": "Asia Pacific", "population": 110000000},
-    "Vietnam": {"languages": ["vi", "en"], "region": "Asia Pacific", "population": 97300000},
-
-    # Middle East & Africa
-    "United Arab Emirates": {"languages": ["ar", "en"], "region": "Middle East", "population": 9900000},
-    "Saudi Arabia": {"languages": ["ar", "en"], "region": "Middle East", "population": 34800000},
-    "Israel": {"languages": ["he", "en"], "region": "Middle East", "population": 9300000},
-    "South Africa": {"languages": ["en", "af"], "region": "Africa", "population": 59300000},
-    "Nigeria": {"languages": ["en"], "region": "Africa", "population": 206000000},
-    "Egypt": {"languages": ["ar", "en"], "region": "Middle East", "population": 102000000},
-    "Turkey": {"languages": ["tr", "en"], "region": "Middle East", "population": 84300000},
-
-    # Latin America
-    "Brazil": {"languages": ["pt", "en"], "region": "Latin America", "population": 212000000},
-    "Argentina": {"languages": ["es", "en"], "region": "Latin America", "population": 45400000},
-    "Chile": {"languages": ["es", "en"], "region": "Latin America", "population": 19100000},
-    "Colombia": {"languages": ["es", "en"], "region": "Latin America", "population": 50900000},
-    "Peru": {"languages": ["es", "en"], "region": "Latin America", "population": 33000000},
-
-    # Other
-    "Russia": {"languages": ["ru", "en"], "region": "Eastern Europe", "population": 144000000},
-    "Ireland": {"languages": ["en"], "region": "Western Europe", "population": 5000000},
-}
-
-# Industry taxonomies by business type
-INDUSTRY_TAXONOMIES = {
-    BusinessType.B2C: {
-        "Retail": ["Fashion & Apparel", "Electronics", "Home & Garden", "Sports & Outdoors",
-                   "Books & Media", "Toys & Games", "Pet Supplies", "General Merchandise"],
-        "Food & Beverage": ["Supermarkets", "Restaurants", "QSR/Fast Food", "Cafes & Coffee Shops",
-                            "Specialty Food", "Liquor Stores", "Bakeries", "Food Delivery"],
-        "Health & Beauty": ["Pharmacies", "Cosmetics", "Health Stores", "Optical",
-                            "Beauty Salons", "Wellness Centers", "Medical Supplies"],
-        "Hospitality": ["Hotels", "Resorts", "Vacation Rentals", "Travel Agencies",
-                        "Entertainment Venues", "Theme Parks", "Cinemas"],
-        "Services": ["Banking", "Insurance", "Telecommunications", "Utilities",
-                     "Education", "Fitness Centers", "Car Rentals"]
-    },
-    BusinessType.B2B: {
-        "Technology": ["Software", "SaaS", "IT Services", "Cloud Infrastructure",
-                       "Cybersecurity", "Data Analytics", "AI/ML Solutions"],
-        "Manufacturing": ["Industrial Equipment", "Components", "Raw Materials",
-                          "Packaging", "Chemicals", "Textiles"],
-        "Professional Services": ["Consulting", "Legal", "Accounting", "Marketing Agencies",
-                                  "Staffing", "Engineering", "Architecture"],
-        "Wholesale & Distribution": ["Food Distribution", "Industrial Supplies",
-                                     "Medical Supplies", "Electronics Distribution"],
-        "Business Operations": ["Logistics", "Facilities Management", "Payroll Services",
-                                "Office Supplies", "Commercial Real Estate"]
-    },
-    BusinessType.D2C: {
-        "Consumer Brands": ["Fashion Brands", "Beauty Brands", "Food & Beverage Brands",
-                            "Electronics Brands", "Home Goods Brands", "Wellness Brands"],
-        "Subscription Services": ["Meal Kits", "Beauty Boxes", "Media Subscriptions",
-                                  "Software Subscriptions", "Fitness Programs"]
-    },
-    BusinessType.MARKETPLACE: {
-        "E-commerce": ["General Marketplaces", "Fashion Marketplaces", "Food Delivery Platforms",
-                       "Service Marketplaces", "B2B Marketplaces", "Local Marketplaces"]
-    }
-}
-
-
-# Distribution modes
-class DistributionMode(Enum):
-    EQUAL = "equal"  # Equal distribution across countries
-    POPULATION = "population"  # Proportional to population
-    CUSTOM = "custom"  # User-defined per country
-
-
-# Output schemas
-class CompanyEntry(BaseModel):
-    name: str = Field(description="Company name")
-    confidence: str = Field(description="Confidence level: absolute, high, medium, low")
-    operates_in_country: bool = Field(description="Whether company operates in the specified country")
-    business_type: str = Field(description="Type of business: B2C, B2B, etc.")
-    industry_category: str = Field(description="Industry category")
-    estimated_revenue: Optional[str] = Field(description="Estimated annual revenue range", default=None)
-    estimated_employees: Optional[str] = Field(description="Estimated employee count range", default=None)
-    company_size: Optional[str] = Field(description="Company size: small, medium, enterprise, unknown",
-                                        default="unknown")
-    reasoning: str = Field(description="Brief reasoning for confidence level")
-
-    def classify_size(self):
-        """Classify company size based on revenue and employees"""
-        # Try to classify by employees first
-        if self.estimated_employees:
-            emp_str = self.estimated_employees.lower()
-            if any(x in emp_str for x in ["1-10", "11-50", "1-50"]):
-                self.company_size = CompanySize.SMALL.value
-            elif any(x in emp_str for x in ["51-200", "201-500", "51-500"]):
-                self.company_size = CompanySize.MEDIUM.value
-            elif any(x in emp_str for x in ["501-1000", "1000+", "5000+", "10000+"]):
-                self.company_size = CompanySize.ENTERPRISE.value
-
-        # If no employee classification, try revenue
-        if self.company_size == "unknown" and self.estimated_revenue:
-            rev_str = self.estimated_revenue.lower()
-            if any(x in rev_str for x in ["$1m-$10m", "<$10m", "$5m"]):
-                self.company_size = CompanySize.SMALL.value
-            elif any(x in rev_str for x in ["$10m-$50m", "$50m-$100m", "$10m-$100m"]):
-                self.company_size = CompanySize.MEDIUM.value
-            elif any(x in rev_str for x in ["$100m", "$500m", "$1b", "billion"]):
-                self.company_size = CompanySize.ENTERPRISE.value
-
-
-class SearchStrategy(BaseModel):
-    country: str = Field(description="Target country")
-    business_type: str = Field(description="Business type being searched")
-    industry: str = Field(description="Industry being searched")
-    known_companies: List[CompanyEntry] = Field(description="Companies from AI knowledge")
-    search_queries: List[str] = Field(description="Suggested search queries for validation")
-    search_patterns: List[str] = Field(description="General patterns to search for")
-    industry_keywords: Dict[str, List[str]] = Field(description="Industry-specific keywords by language")
-    estimated_total: int = Field(description="Estimated total companies in this segment")
+# Enhanced location with proximity support
+@dataclass
+class LocationCriteria:
+    countries: List[str] = field(default_factory=list)
+    states: List[str] = field(default_factory=list)
+    cities: List[str] = field(default_factory=list)
+    regions: List[str] = field(default_factory=list)
+    proximity: Optional[Dict[str, Any]] = None  # {"location": "Sydney CBD", "radius_km": 50}
+    exclusions: List[str] = field(default_factory=list)
 
 
 @dataclass
-class SearchProgress:
-    """Track progress across multiple searches"""
-    total_companies_found: int = 0
-    companies_by_country: Dict[str, int] = field(default_factory=dict)
-    companies_by_confidence: Dict[str, int] = field(default_factory=dict)
-    companies_by_size: Dict[str, int] = field(default_factory=dict)
-    elapsed_time: float = 0
-    api_calls: int = 0
-    estimated_cost: float = 0
-    deployments_used: List[str] = field(default_factory=list)
-    avg_time_per_search: float = 0
-
-    def update(self, strategy: SearchStrategy):
-        """Update progress with results from a strategy"""
-        self.total_companies_found += len(strategy.known_companies)
-        country = strategy.country
-        self.companies_by_country[country] = self.companies_by_country.get(country, 0) + len(strategy.known_companies)
-
-        for company in strategy.known_companies:
-            conf = company.confidence
-            self.companies_by_confidence[conf] = self.companies_by_confidence.get(conf, 0) + 1
-
-            size = company.company_size
-            self.companies_by_size[size] = self.companies_by_size.get(size, 0) + 1
-
-        self.api_calls += 1
-        # Update average time
-        if self.api_calls > 0:
-            self.avg_time_per_search = self.elapsed_time / self.api_calls
-        # Rough cost estimate: $0.01 per 1K tokens, assume ~2K tokens per call
-        self.estimated_cost += 0.02
+class FinancialCriteria:
+    revenue_min: Optional[float] = None
+    revenue_max: Optional[float] = None
+    revenue_currency: str = "USD"
+    giving_capacity_min: Optional[float] = None
+    growth_rate_min: Optional[float] = None
+    profitable: Optional[bool] = None
 
 
-class SearchStrategistAgent:
+@dataclass
+class OrganizationalCriteria:
+    employee_count_min: Optional[int] = None
+    employee_count_max: Optional[int] = None
+    employee_count_by_location: Optional[Dict[str, int]] = None  # {"Victoria": 150}
+    office_types: List[str] = field(default_factory=list)  # ["HQ", "Regional", "Branch"]
+    company_stage: Optional[str] = None  # "Startup", "Growth", "Mature"
+
+
+@dataclass
+class BehavioralSignals:
+    csr_programs: List[str] = field(default_factory=list)
+    csr_focus_areas: List[str] = field(default_factory=list)  # ["children", "education", "environment"]
+    certifications: List[str] = field(default_factory=list)  # ["B-Corp", "ISO 26000"]
+    recent_events: List[str] = field(default_factory=list)  # ["office move", "expansion", "CSR launch"]
+    technology_stack: List[str] = field(default_factory=list)
+    esg_maturity: Optional[str] = None  # "Basic", "Developing", "Mature", "Leading"
+
+
+@dataclass
+class SearchCriteria:
+    # Core criteria
+    location: LocationCriteria
+    financial: FinancialCriteria
+    organizational: OrganizationalCriteria
+    behavioral: BehavioralSignals
+
+    # Industry and business
+    business_types: List[str] = field(default_factory=list)
+    industries: List[Dict[str, Any]] = field(default_factory=list)  # [{"name": "Construction", "priority": 1}]
+
+    # Custom search
+    keywords: List[str] = field(default_factory=list)
+    custom_prompt: Optional[str] = None
+
+    # Exclusions
+    excluded_industries: List[str] = field(default_factory=list)
+    excluded_companies: List[str] = field(default_factory=list)
+    excluded_behaviors: List[str] = field(default_factory=list)  # ["misconduct", "controversies"]
+
+
+# Enhanced Company Entry with all new fields
+class EnhancedCompanyEntry(BaseModel):
+    # Basic info (existing)
+    name: str = Field(description="Company name")
+    confidence: str = Field(description="Confidence level: absolute, high, medium, low")
+    operates_in_country: bool = Field(description="Whether company operates in the specified country")
+    business_type: str = Field(description="Type of business")
+    industry_category: str = Field(description="Industry category")
+    sub_industry: Optional[str] = Field(description="Sub-industry or niche", default=None)
+
+    # Geographic footprint
+    headquarters: Optional[Dict[str, Any]] = Field(
+        description="HQ location with address and coordinates",
+        default=None
+    )
+    office_locations: List[Any] = Field(
+        description="List of office locations - can be strings or dicts",
+        default_factory=list
+    )
+    service_areas: List[str] = Field(
+        description="Geographic areas where company provides services",
+        default_factory=list
+    )
+
+    # Financial profile
+    estimated_revenue: Optional[str] = Field(description="Estimated annual revenue range", default=None)
+    revenue_currency: Optional[str] = Field(description="Currency of revenue", default="USD")
+    estimated_employees: Optional[str] = Field(description="Estimated employee count range", default=None)
+    employees_by_location: Optional[Dict[str, str]] = Field(
+        description="Employee count by location",
+        default=None
+    )
+    company_size: Optional[str] = Field(description="Company size classification", default="unknown")
+    giving_history: List[Dict[str, Any]] = Field(
+        description="Historical giving/donation data",
+        default_factory=list
+    )
+    financial_health: Optional[str] = Field(description="Growth, stable, declining", default=None)
+
+    # CSR/ESG Profile
+    csr_programs: List[str] = Field(description="CSR programs and initiatives", default_factory=list)
+    csr_focus_areas: List[str] = Field(description="Primary CSR focus areas", default_factory=list)
+    certifications: List[str] = Field(description="Certifications like B-Corp", default_factory=list)
+    esg_score: Optional[float] = Field(description="ESG score if available", default=None)
+    esg_maturity: Optional[str] = Field(description="ESG maturity level", default=None)
+    community_involvement: List[str] = Field(description="Community programs", default_factory=list)
+
+    # Signals and triggers
+    recent_events: List[Any] = Field(
+        description="Recent events - can be strings or dicts",
+        default_factory=list
+    )
+    leadership_changes: List[Dict[str, Any]] = Field(
+        description="Recent leadership changes",
+        default_factory=list
+    )
+    growth_signals: List[str] = Field(description="Indicators of growth", default_factory=list)
+
+    # ICP Matching
+    icp_tier: Optional[str] = Field(description="Tier A, B, C based on criteria match", default=None)
+    icp_score: Optional[float] = Field(description="Overall ICP match score 0-100", default=None)
+    matched_criteria: List[str] = Field(description="Which criteria were matched", default_factory=list)
+    missing_criteria: List[str] = Field(description="Which criteria were not met", default_factory=list)
+
+    # Data quality
+    data_freshness: Optional[str] = Field(description="When data was last updated", default=None)
+    data_sources: List[str] = Field(description="Sources used for this data", default_factory=list)
+    validation_notes: Optional[str] = Field(description="Any validation notes", default=None)
+
+    # Original fields kept for compatibility
+    reasoning: str = Field(description="Brief reasoning for confidence level")
+
+
+class OutputValidator:
+    """Validates and fixes AI output formatting issues"""
+
+    def __init__(self):
+        self.retry_limit = 3
+
+    def validate_and_fix(self, response: str, expected_type: type) -> Any:
+        """Validate and attempt to fix malformed responses"""
+        try:
+            # First attempt: direct parsing
+            if isinstance(response, str):
+                parsed = json.loads(response)
+            else:
+                parsed = response
+            return parsed
+        except json.JSONDecodeError as e:
+            # Try to fix common issues
+            return self.fix_malformed_json(response, e)
+
+    def fix_malformed_json(self, response: str, error: json.JSONDecodeError) -> Any:
+        """Attempt to fix common JSON formatting issues"""
+        # Handle truncated responses
+        if "Unterminated string" in str(error) or response.count('{') > response.count('}'):
+            # Try to complete the JSON
+            if response.rstrip().endswith(','):
+                response = response.rstrip()[:-1]
+
+            # Count brackets and try to balance
+            open_brackets = response.count('{') - response.count('}')
+            open_squares = response.count('[') - response.count(']')
+
+            if open_squares > 0:
+                response += ']' * open_squares
+            if open_brackets > 0:
+                response += '}' * open_brackets
+
+            try:
+                return json.loads(response)
+            except:
+                pass
+
+        # Try to extract JSON from mixed content
+        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except:
+                pass
+
+        # Return empty structure if all else fails
+        return {"companies": [], "error": "Failed to parse response"}
+
+
+class StructuredOutputHandler:
+    """Handles structured output generation with GPT-4"""
+
+    def __init__(self, client: AzureOpenAI, deployment_name: str):
+        self.client = client
+        self.deployment_name = deployment_name
+        self.validator = OutputValidator()
+
+    async def get_structured_output(self, prompt: str, schema: Dict[str, Any], retry_count: int = 3) -> Any:
+        """Get structured output with retries and validation"""
+        last_error = None
+
+        for attempt in range(retry_count):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    messages=[
+                        {"role": "system",
+                         "content": "You are an expert at finding companies. Always respond with valid JSON."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,
+                    max_tokens=4000,
+                    response_format={"type": "json_object"}
+                )
+
+                content = response.choices[0].message.content
+                return self.validator.validate_and_fix(content, dict)
+
+            except Exception as e:
+                last_error = e
+                if attempt < retry_count - 1:
+                    # Add error context to prompt for next attempt
+                    prompt = f"{prompt}\n\nPrevious attempt failed with: {str(e)}. Please ensure valid JSON."
+                    await asyncio.sleep(2 ** attempt)
+
+        # Return partial results if all attempts fail
+        return {"companies": [], "error": f"Failed after {retry_count} attempts: {str(last_error)}"}
+
+
+class EnhancedSearchStrategistAgent:
+    """Enhanced agent with comprehensive search capabilities"""
+
     def __init__(self, deployment_name: str = "gpt-4.1"):
         self.deployment_name = deployment_name
-        self.client = None  # Don't initialize yet
-        self.progress = SearchProgress()
+        self.client = None
+        self.output_handler = None
+        self.validator = OutputValidator()
 
     def _init_llm(self):
         """Initialize the LLM with Azure OpenAI"""
         try:
-            from openai import AzureOpenAI
-
-            # Using the exact pattern from your NRF code
             self.client = AzureOpenAI(
                 api_key="CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1",
                 api_version="2024-02-01",
                 azure_endpoint="https://amex-openai-2025.openai.azure.com/"
             )
-
+            self.output_handler = StructuredOutputHandler(self.client, self.deployment_name)
             print(f"Successfully initialized Azure OpenAI client with deployment: {self.deployment_name}")
         except Exception as e:
             print(f"Error initializing Azure OpenAI: {str(e)}")
             raise
 
-    async def generate_strategy(self,
-                                country: str,
-                                business_type: BusinessType,
-                                industry: str,
-                                sub_industry: Optional[str] = None,
-                                target_count: int = 100,
-                                include_financials: bool = True,
-                                size_preferences: List[str] = None) -> SearchStrategy:
-        """Generate a search strategy for finding companies"""
-        start_time = time.time()
-
-        # Initialize client if not already done
-        if self.client is None:
+    def extract_criteria_from_text(self, free_text: str) -> Dict[str, Any]:
+        """Extract structured criteria from free text using GPT-4"""
+        if not self.client:
             self._init_llm()
 
-        # Use sub-industry if provided, otherwise use main industry
-        search_industry = f"{industry} - {sub_industry}" if sub_industry else industry
+        extraction_prompt = f"""
+        Extract structured search criteria from this text and categorize them:
 
-        # Build size focus string
-        size_focus = ""
-        if size_preferences and "All Sizes" not in size_preferences:
-            size_definitions = {
-                "Small": "small companies (1-50 employees or <$10M revenue)",
-                "Medium": "medium companies (51-500 employees or $10M-$100M revenue)",
-                "Enterprise": "enterprise companies (500+ employees or $100M+ revenue)"
-            }
-            focused_sizes = [size_definitions.get(s, s) for s in size_preferences]
-            size_focus = f"\nFocus particularly on {', '.join(focused_sizes)}."
+        Text: {free_text}
 
-        # Simple system message that mentions JSON
-        system_message = f"You are an expert at identifying {business_type.value} companies globally. Always respond with valid JSON."
-
-        # Simple user prompt with clear example - limit companies per request
-        # Cap at 30 companies per request to avoid token limits
-        actual_target = min(target_count, 30)
-
-        user_message = f"""List {actual_target} {business_type.value} companies in {search_industry} industry in {country}.{size_focus}
-
-For each company provide:
-- name: Company name
-- confidence: "absolute" for major brands, "high" for well-known, "medium" for fairly sure, "low" for uncertain
-- operates_in_country: true/false
-- business_type: "{business_type.value}"
-- industry_category: "{search_industry}"
-- estimated_revenue: {"revenue range like $10M-$50M" if include_financials else "null"}
-- estimated_employees: {"employee range like 51-200" if include_financials else "null"}
-- reasoning: Brief explanation
-
-Example format:
-{{
-    "companies": [
+        Extract and return as JSON:
         {{
-            "name": "Example Company",
-            "confidence": "high",
-            "operates_in_country": true,
-            "business_type": "{business_type.value}",
-            "industry_category": "{search_industry}",
-            "estimated_revenue": {"\"$10M-$50M\"" if include_financials else "null"},
-            "estimated_employees": {"\"51-200\"" if include_financials else "null"},
-            "reasoning": "Well-known company in this market"
+            "locations": {{
+                "countries": [],
+                "states": [],
+                "cities": [],
+                "regions": [],
+                "proximity": null
+            }},
+            "financial": {{
+                "revenue_min": null,
+                "revenue_max": null,
+                "revenue_currency": "USD",
+                "giving_capacity_min": null
+            }},
+            "organizational": {{
+                "employee_count_min": null,
+                "employee_count_max": null,
+                "office_types": []
+            }},
+            "behavioral": {{
+                "csr_focus_areas": [],
+                "certifications": [],
+                "recent_events": []
+            }},
+            "industries": [],
+            "keywords": [],
+            "exclusions": {{
+                "industries": [],
+                "companies": [],
+                "behaviors": []
+            }},
+            "confidence_scores": {{}}
         }}
-    ]
-}}"""
+
+        Be thorough but only extract what's explicitly mentioned.
+        """
 
         try:
-            # Call Azure OpenAI with json_object mode
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_message}
+                    {"role": "system", "content": "You are an expert at extracting structured data from text."},
+                    {"role": "user", "content": extraction_prompt}
                 ],
                 temperature=0.1,
-                max_tokens=4000,
-                response_format={"type": "json_object"}  # Force JSON response
+                response_format={"type": "json_object"}
             )
 
-            # Parse the response
-            content = response.choices[0].message.content
-
-            # Try to parse JSON
-            try:
-                parsed_data = json.loads(content)
-            except json.JSONDecodeError as e:
-                print(f"JSON parsing error: {e}")
-
-                # Try to fix truncated JSON
-                if "Unterminated string" in str(e) or "Expecting property name" in str(e) or content.count(
-                        '{') > content.count('}'):
-                    print("Attempting to fix truncated JSON...")
-
-                    # Method 1: Find the last complete company entry
-                    last_complete_bracket = content.rfind('},')
-                    if last_complete_bracket > 0:
-                        # Truncate after the last complete company and properly close the JSON
-                        fixed_content = content[:last_complete_bracket + 1] + ']}'
-                        try:
-                            parsed_data = json.loads(fixed_content)
-                            print(f"Successfully recovered {len(parsed_data.get('companies', []))} companies")
-                        except:
-                            # Method 2: Try to find companies array and extract it
-                            try:
-                                companies_start = content.find('"companies"') + len('"companies"')
-                                companies_start = content.find('[', companies_start)
-                                if companies_start > 0:
-                                    # Find matching bracket or last complete entry
-                                    bracket_count = 0
-                                    last_valid_pos = companies_start
-                                    for i, char in enumerate(content[companies_start:], companies_start):
-                                        if char == '[':
-                                            bracket_count += 1
-                                        elif char == ']':
-                                            bracket_count -= 1
-                                            if bracket_count == 0:
-                                                last_valid_pos = i
-                                                break
-                                        elif char == '}' and content[i - 1] == '}':
-                                            last_valid_pos = i
-
-                                    companies_content = content[companies_start:last_valid_pos + 1]
-                                    if not companies_content.endswith(']'):
-                                        companies_content += ']'
-
-                                    parsed_data = {"companies": json.loads(companies_content)}
-                                    print(f"Successfully extracted {len(parsed_data.get('companies', []))} companies")
-                                else:
-                                    parsed_data = {"companies": []}
-                            except:
-                                parsed_data = {"companies": []}
-                    else:
-                        parsed_data = {"companies": []}
-                else:
-                    # Other JSON errors
-                    parsed_data = {"companies": []}
-
-            # Handle wrapped response - find the companies array
-            companies = []
-            if isinstance(parsed_data, dict):
-                if "companies" in parsed_data:
-                    companies = parsed_data["companies"]
-                else:
-                    # Find any key that contains a list
-                    for key, value in parsed_data.items():
-                        if isinstance(value, list):
-                            companies = value
-                            break
-
-            # Convert to CompanyEntry objects
-            company_entries = []
-            for company_data in companies:
-                try:
-                    company = CompanyEntry(**company_data)
-                    company.classify_size()  # Auto-classify size
-                    company_entries.append(company)
-                except Exception as e:
-                    print(f"Error creating company entry: {e}")
-                    continue
-
-            # Create SearchStrategy
-            strategy = SearchStrategy(
-                country=country,
-                business_type=business_type.value,
-                industry=search_industry,
-                known_companies=company_entries,
-                search_queries=[f"{search_industry} {country}"],
-                search_patterns=[f"{business_type.value} {search_industry} companies {country}"],
-                industry_keywords={"en": [search_industry], "local": []},
-                estimated_total=len(company_entries)
-            )
-
-            # Update progress
-            self.progress.update(strategy)
-            self.progress.elapsed_time += (time.time() - start_time)
-
-            return strategy
-
+            return json.loads(response.choices[0].message.content)
         except Exception as e:
-            print(f"Error generating strategy: {str(e)[:100]}")
+            print(f"Error extracting criteria: {e}")
+            return {}
 
-            # Return empty strategy on error
-            return SearchStrategy(
-                country=country,
-                business_type=business_type.value,
-                industry=search_industry,
-                known_companies=[],
-                search_queries=[f"{search_industry} {country}"],
-                search_patterns=[f"{business_type.value} {search_industry} companies {country}"],
-                industry_keywords={"en": [search_industry], "local": []},
-                estimated_total=0
-            )
+    async def generate_enhanced_strategy(
+            self,
+            criteria: SearchCriteria,
+            target_count: int = 100
+    ) -> Dict[str, Any]:
+        """Generate search strategy with enhanced criteria"""
+        if not self.client:
+            self._init_llm()
 
-    def get_available_industries(self, business_type: BusinessType) -> Dict[str, List[str]]:
-        """Get available industries and sub-industries for a business type"""
-        return INDUSTRY_TAXONOMIES.get(business_type, {})
+        # Build comprehensive search prompt
+        prompt = self._build_enhanced_prompt(criteria, target_count)
 
-    def get_progress_summary(self) -> Dict[str, Any]:
-        """Get current progress summary"""
-        return {
-            "total_companies": self.progress.total_companies_found,
-            "by_country": dict(self.progress.companies_by_country),
-            "by_confidence": dict(self.progress.companies_by_confidence),
-            "by_size": dict(self.progress.companies_by_size),
-            "api_calls": self.progress.api_calls,
-            "elapsed_time": round(self.progress.elapsed_time, 2),
-            "estimated_cost": round(self.progress.estimated_cost, 2)
-        }
+        # Get structured output
+        result = await self.output_handler.get_structured_output(
+            prompt,
+            schema={"type": "object", "properties": {"companies": {"type": "array"}}}
+        )
 
-
-class ParallelSearchCoordinator:
-    """Coordinates parallel searches across multiple deployments"""
-
-    def __init__(self, deployments: List[str]):
-        self.deployments = deployments
-        self.agents = {dep: SearchStrategistAgent(dep) for dep in deployments}
-        self.combined_progress = SearchProgress()
-
-    def calculate_country_distribution(self, countries: List[str], total_target: int,
-                                       mode: DistributionMode = DistributionMode.EQUAL) -> Dict[str, int]:
-        """Calculate how many companies to search per country"""
-
-        if mode == DistributionMode.EQUAL:
-            per_country = total_target // len(countries)
-            remainder = total_target % len(countries)
-            distribution = {country: per_country for country in countries}
-            # Distribute remainder
-            for i, country in enumerate(countries[:remainder]):
-                distribution[country] += 1
-
-        elif mode == DistributionMode.POPULATION:
-            # Get total population
-            total_pop = sum(TARGET_COUNTRIES[c]["population"] for c in countries)
-            distribution = {}
-            allocated = 0
-
-            for country in countries[:-1]:  # All but last
-                pop = TARGET_COUNTRIES[country]["population"]
-                count = int((pop / total_pop) * total_target)
-                distribution[country] = max(10, count)  # Minimum 10 per country
-                allocated += distribution[country]
-
-            # Give remainder to last country
-            distribution[countries[-1]] = total_target - allocated
-
-        return distribution
-
-    async def search_parallel(self,
-                              countries: List[str],
-                              business_type: BusinessType,
-                              industry: str,
-                              sub_industry: Optional[str] = None,
-                              total_target: int = 1000,
-                              distribution_mode: DistributionMode = DistributionMode.EQUAL,
-                              custom_distribution: Optional[Dict[str, int]] = None,
-                              include_financials: bool = True,
-                              size_preferences: List[str] = None,
-                              progress_callback=None) -> Dict[str, Any]:
-        """Execute searches in parallel across multiple deployments"""
-
-        start_time = time.time()
-
-        # Calculate distribution
-        if distribution_mode == DistributionMode.CUSTOM and custom_distribution:
-            country_targets = custom_distribution
-        else:
-            country_targets = self.calculate_country_distribution(
-                countries, total_target, distribution_mode
-            )
-
-        # Create work items (country, target_count pairs)
-        work_items = [(country, count) for country, count in country_targets.items()]
-
-        # Distribute work across deployments - one task per deployment at a time
-        all_results = []
-
-        # Process in batches of deployment count
-        for i in range(0, len(work_items), len(self.deployments)):
-            batch = work_items[i:i + len(self.deployments)]
-            batch_tasks = []
-
-            # Assign one country to each deployment
-            for idx, (country, count) in enumerate(batch):
-                if idx < len(self.deployments):
-                    deployment = self.deployments[idx]
-                    agent = self.agents[deployment]
-
-                    # Create async task
-                    task = agent.generate_strategy(
-                        country=country,
-                        business_type=business_type,
-                        industry=industry,
-                        sub_industry=sub_industry,
-                        target_count=count,
-                        include_financials=include_financials,
-                        size_preferences=size_preferences
-                    )
-                    batch_tasks.append((task, country, deployment, count))
-
-            # Execute batch and wait
-            for task, country, deployment, count in batch_tasks:
-                try:
-                    strategy = await task
-
-                    all_results.append({
-                        "country": country,
-                        "deployment": deployment,
-                        "strategy": strategy,
-                        "companies_found": len(strategy.known_companies),
-                        "target": count
-                    })
-
-                    if progress_callback:
-                        progress_callback(country, deployment, len(strategy.known_companies))
-
-                except Exception as e:
-                    print(f"Error searching {country} with {deployment}: {str(e)[:100]}")
-                    all_results.append({
-                        "country": country,
-                        "deployment": deployment,
-                        "strategy": None,
-                        "companies_found": 0,
-                        "target": count,
-                        "error": str(e)
-                    })
-
-        # Combine progress from all agents
-        for agent in self.agents.values():
-            self.combined_progress.total_companies_found += agent.progress.total_companies_found
-            self.combined_progress.api_calls += agent.progress.api_calls
-            self.combined_progress.estimated_cost += agent.progress.estimated_cost
-
-            for country, count in agent.progress.companies_by_country.items():
-                self.combined_progress.companies_by_country[country] = \
-                    self.combined_progress.companies_by_country.get(country, 0) + count
-
-            for conf, count in agent.progress.companies_by_confidence.items():
-                self.combined_progress.companies_by_confidence[conf] = \
-                    self.combined_progress.companies_by_confidence.get(conf, 0) + count
-
-            for size, count in agent.progress.companies_by_size.items():
-                self.combined_progress.companies_by_size[size] = \
-                    self.combined_progress.companies_by_size.get(size, 0) + count
-
-        self.combined_progress.elapsed_time = time.time() - start_time
-        self.combined_progress.deployments_used = self.deployments
+        # Process and enhance company entries
+        enhanced_companies = []
+        for company_data in result.get("companies", []):
+            try:
+                company = EnhancedCompanyEntry(**company_data)
+                # Calculate ICP score
+                company = self._calculate_icp_score(company, criteria)
+                enhanced_companies.append(company)
+            except Exception as e:
+                print(f"Error processing company: {e}")
+                continue
 
         return {
-            "results": all_results,
-            "summary": {
-                "total_companies_found": self.combined_progress.total_companies_found,
-                "total_api_calls": self.combined_progress.api_calls,
-                "total_cost": self.combined_progress.estimated_cost,
-                "elapsed_time": self.combined_progress.elapsed_time,
-                "deployments_used": len(self.deployments),
-                "countries_searched": len(countries),
-                "by_country": dict(self.combined_progress.companies_by_country),
-                "by_confidence": dict(self.combined_progress.companies_by_confidence),
-                "by_size": dict(self.combined_progress.companies_by_size)
+            "companies": enhanced_companies,
+            "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
+            "metadata": {
+                "total_found": len(enhanced_companies),
+                "timestamp": datetime.now().isoformat(),
+                "deployment": self.deployment_name
             }
         }
 
+    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
+        """Build comprehensive prompt from criteria"""
+        prompt_parts = [f"Find {target_count} companies matching these criteria:"]
 
-# Basic test function
-async def test_agent():
-    """Test the Search Strategist Agent"""
-    print("Testing Generic Search Strategist Agent")
-    print("=" * 60)
+        # Location criteria
+        if criteria.location.cities:
+            prompt_parts.append(f"Cities: {', '.join(criteria.location.cities)}")
+        elif criteria.location.states:
+            prompt_parts.append(f"States/Regions: {', '.join(criteria.location.states)}")
+        elif criteria.location.countries:
+            prompt_parts.append(f"Countries: {', '.join(criteria.location.countries)}")
 
-    agent = SearchStrategistAgent()
+        if criteria.location.proximity:
+            prompt_parts.append(
+                f"Within {criteria.location.proximity['radius_km']}km of {criteria.location.proximity['location']}")
 
-    # Test Case 1: B2C Retail in UK
-    print("\nTest 1: B2C Fashion Retail in United Kingdom")
-    strategy = await agent.generate_strategy(
-        country="United Kingdom",
-        business_type=BusinessType.B2C,
-        industry="Retail",
-        sub_industry="Fashion & Apparel",
-        target_count=20,
-        include_financials=True
-    )
+        # Financial criteria
+        if criteria.financial.revenue_min or criteria.financial.revenue_max:
+            rev_range = f"{criteria.financial.revenue_currency} "
+            if criteria.financial.revenue_min and criteria.financial.revenue_max:
+                rev_range += f"{criteria.financial.revenue_min:,.0f} - {criteria.financial.revenue_max:,.0f}"
+            elif criteria.financial.revenue_min:
+                rev_range += f"{criteria.financial.revenue_min:,.0f}+"
+            else:
+                rev_range += f"up to {criteria.financial.revenue_max:,.0f}"
+            prompt_parts.append(f"Revenue: {rev_range}")
 
-    print(f"Found {len(strategy.known_companies)} companies")
-    for company in strategy.known_companies[:5]:
-        print(f"  - {company.name} ({company.confidence}) - Size: {company.company_size}")
+        # Employee criteria
+        if criteria.organizational.employee_count_min or criteria.organizational.employee_count_max:
+            if criteria.organizational.employee_count_min and criteria.organizational.employee_count_max:
+                emp_range = f"{criteria.organizational.employee_count_min} - {criteria.organizational.employee_count_max} employees"
+            elif criteria.organizational.employee_count_min:
+                emp_range = f"{criteria.organizational.employee_count_min}+ employees"
+            else:
+                emp_range = f"up to {criteria.organizational.employee_count_max} employees"
+            prompt_parts.append(emp_range)
+
+        # Industry priorities
+        if criteria.industries:
+            industry_list = sorted(criteria.industries, key=lambda x: x.get('priority', 999))
+            prompt_parts.append("Industries (by priority):")
+            for ind in industry_list:
+                prompt_parts.append(f"  {ind.get('priority', '-')}. {ind['name']}")
+
+        # CSR/ESG criteria
+        if criteria.behavioral.csr_focus_areas:
+            prompt_parts.append(f"CSR focus on: {', '.join(criteria.behavioral.csr_focus_areas)}")
+
+        if criteria.behavioral.certifications:
+            prompt_parts.append(f"Certifications: {', '.join(criteria.behavioral.certifications)}")
+
+        # Custom prompt
+        if criteria.custom_prompt:
+            prompt_parts.append(f"\nAdditional requirements: {criteria.custom_prompt}")
+
+        # Exclusions
+        if criteria.excluded_industries:
+            prompt_parts.append(f"\nExclude industries: {', '.join(criteria.excluded_industries)}")
+
+        # Output format - EXPLICIT REQUIRED FIELDS
+        prompt_parts.append("""
+
+Return a JSON object with a "companies" array. Each company MUST have these fields:
+{
+    "companies": [
+        {
+            "name": "Company Name",
+            "confidence": "high",
+            "operates_in_country": true,
+            "business_type": "B2C",
+            "industry_category": "Retail",
+            "reasoning": "Why this company matches",
+            "estimated_revenue": "$50M-$100M",
+            "estimated_employees": "200-500",
+            "company_size": "medium",
+            "headquarters": {"city": "London", "address": "123 Main St"},
+            "office_locations": ["London", "Manchester"],
+            "service_areas": ["UK", "Ireland"],
+            "csr_programs": ["community support"],
+            "csr_focus_areas": ["children", "education"],
+            "certifications": [],
+            "recent_events": [],
+            "data_sources": ["Company website"]
+        }
+    ]
+}
+
+IMPORTANT: 
+- Return ONLY valid JSON
+- Each company MUST have: name, confidence, operates_in_country, business_type, industry_category, reasoning
+- confidence must be one of: absolute, high, medium, low
+- operates_in_country must be true or false
+- office_locations can be a simple array of city names
+        """)
+
+        return "\n".join(prompt_parts)
+
+    def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
+        """Calculate ICP score and tier for a company"""
+        score = 0
+        max_score = 0
+        matched = []
+        missing = []
+
+        # Location match (20 points)
+        max_score += 20
+        if company.headquarters:
+            # Check location matches
+            location_matched = False
+            if criteria.location.cities:
+                if any(city.lower() in company.headquarters.get('city', '').lower() for city in
+                       criteria.location.cities):
+                    score += 20
+                    matched.append("Location - City match")
+                    location_matched = True
+            elif criteria.location.countries:
+                if company.operates_in_country:
+                    score += 15
+                    matched.append("Location - Country match")
+                    location_matched = True
+
+            if not location_matched:
+                missing.append("Location match")
+
+        # Revenue match (20 points)
+        max_score += 20
+        if company.estimated_revenue and (criteria.financial.revenue_min or criteria.financial.revenue_max):
+            # Parse revenue from company
+            rev_matched = True  # Simplified - in production, parse and compare
+            if rev_matched:
+                score += 20
+                matched.append("Revenue range")
+            else:
+                missing.append("Revenue requirements")
+
+        # Employee count (15 points)
+        max_score += 15
+        if company.estimated_employees and (
+                criteria.organizational.employee_count_min or criteria.organizational.employee_count_max):
+            emp_matched = True  # Simplified
+            if emp_matched:
+                score += 15
+                matched.append("Employee count")
+            else:
+                missing.append("Employee requirements")
+
+        # Industry match (15 points)
+        max_score += 15
+        if criteria.industries:
+            industry_names = [ind['name'].lower() for ind in criteria.industries]
+            if any(ind in company.industry_category.lower() for ind in industry_names):
+                score += 15
+                matched.append("Industry match")
+            else:
+                missing.append("Industry match")
+
+        # CSR/ESG match (30 points)
+        max_score += 30
+        csr_score = 0
+
+        # CSR focus areas (15 points)
+        if criteria.behavioral.csr_focus_areas and company.csr_focus_areas:
+            matching_areas = set(criteria.behavioral.csr_focus_areas) & set(company.csr_focus_areas)
+            if matching_areas:
+                csr_score += 15
+                matched.append(f"CSR focus areas: {', '.join(matching_areas)}")
+            else:
+                missing.append("CSR focus area match")
+
+        # Certifications (10 points)
+        if criteria.behavioral.certifications and company.certifications:
+            matching_certs = set(criteria.behavioral.certifications) & set(company.certifications)
+            if matching_certs:
+                csr_score += 10
+                matched.append(f"Certifications: {', '.join(matching_certs)}")
+            else:
+                missing.append("Required certifications")
+
+        # ESG maturity (5 points)
+        if criteria.behavioral.esg_maturity and company.esg_maturity:
+            if company.esg_maturity in ["Mature", "Leading"]:
+                csr_score += 5
+                matched.append("ESG maturity")
+
+        score += csr_score
+
+        # Calculate final score
+        final_score = (score / max_score) * 100 if max_score > 0 else 0
+
+        # Determine tier
+        if final_score >= 80:
+            tier = "A"
+        elif final_score >= 60:
+            tier = "B"
+        elif final_score >= 40:
+            tier = "C"
+        else:
+            tier = "D"
+
+        # Update company object
+        company.icp_score = round(final_score, 1)
+        company.icp_tier = tier
+        company.matched_criteria = matched
+        company.missing_criteria = missing
+
+        return company
 
 
-if __name__ == "__main__":
-    # Run the test
-    asyncio.run(test_agent())
+# Backward compatibility
+SearchStrategistAgent = EnhancedSearchStrategistAgent
