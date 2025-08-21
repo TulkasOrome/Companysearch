@@ -12,25 +12,36 @@ import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 import os
-from openai import AsyncOpenAI
+from openai import AzureOpenAI
+from dotenv import load_dotenv
+import csv
+
+# Load environment variables
+load_dotenv()
 
 
 class TPBDataPOC:
     """POC for extracting Tax Practitioner data using GPT-4.1 and Serper"""
 
-    def __init__(self, openai_api_key: str, serper_api_key: str):
+    def __init__(self, azure_key: str, azure_endpoint: str, azure_version: str, serper_api_key: str,
+                 deployment_name: str = "gpt-4.1"):
         """Initialize with API keys"""
-        self.client = AsyncOpenAI(api_key=openai_api_key)
+        self.client = AzureOpenAI(
+            api_key=azure_key,
+            api_version=azure_version,
+            azure_endpoint=azure_endpoint
+        )
+        self.deployment_name = deployment_name
         self.serper_api_key = serper_api_key
         self.results = []
         self.serper_credits_used = 0
 
-    async def query_gpt_for_practitioners(self, location: str = "Sydney", count: int = 10) -> List[Dict[str, Any]]:
+    def query_gpt_for_practitioners(self, location: str = "Sydney", count: int = 10) -> List[Dict[str, Any]]:
         """
         Query GPT-4.1 for tax practitioners in a location
         Test what data it actually knows
         """
-        print(f"\n🤖 Querying GPT-4.1 for {count} tax practitioners in {location}...")
+        print(f"\n🤖 Querying Azure GPT-4 for {count} tax practitioners in {location}...")
         print("=" * 60)
 
         prompt = f"""
@@ -54,36 +65,65 @@ class TPBDataPOC:
         11. Website
         12. Contact Person Name
 
-        Return as a JSON array with these exact field names.
-        Only include real practitioners you have knowledge of.
+        Return as a JSON array. Only include real practitioners you have knowledge of.
         If you don't know a field, use null.
 
-        Focus on well-known firms that likely have public information available.
+        Format the response as a JSON object with a "practitioners" array:
+        {{
+          "practitioners": [
+            {{
+              "Business/Trading Name": "Example Accounting",
+              "Registration Number": null,
+              "Business Address": "123 Street, Sydney NSW 2000",
+              "Service Type": "Tax Agent",
+              ...
+            }}
+          ]
+        }}
         """
 
         try:
-            response = await self.client.chat.completions.create(
-                model="gpt-4",
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,  # Use deployment name from init
                 messages=[
                     {"role": "system",
-                     "content": "You are a helpful assistant with knowledge of Australian tax practitioners and the Tax Practitioners Board register."},
+                     "content": "You are a helpful assistant with knowledge of Australian tax practitioners."},
                     {"role": "user", "content": prompt}
                 ],
-                response_format={"type": "json_object"},
-                temperature=0.3  # Lower temperature for factual data
+                temperature=0.3,  # Lower temperature for factual data
+                max_tokens=2000
             )
 
             content = response.choices[0].message.content
-            data = json.loads(content)
 
-            # Extract practitioners array from response
+            # Clean up response - remove markdown if present
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0]
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0]
+
+            # Parse JSON
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                # Try to extract JSON from the text
+                json_start = content.find('{')
+                json_end = content.rfind('}') + 1
+                if json_start >= 0 and json_end > json_start:
+                    data = json.loads(content[json_start:json_end])
+                else:
+                    print("❌ Could not parse JSON from response")
+                    return []
+
+            # Extract practitioners
             if isinstance(data, dict):
-                # Handle various possible response structures
-                practitioners = data.get('practitioners', data.get('results', data.get('data', [])))
-            else:
+                practitioners = data.get('practitioners', data.get('results', []))
+            elif isinstance(data, list):
                 practitioners = data
+            else:
+                practitioners = []
 
-            print(f"✅ GPT-4.1 returned {len(practitioners)} practitioners")
+            print(f"✅ GPT returned {len(practitioners)} practitioners")
 
             # Analyze what fields GPT actually knew
             self.analyze_gpt_knowledge(practitioners)
@@ -91,12 +131,18 @@ class TPBDataPOC:
             return practitioners
 
         except Exception as e:
-            print(f"❌ Error querying GPT-4.1: {e}")
+            print(f"❌ Error querying GPT: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def analyze_gpt_knowledge(self, practitioners: List[Dict[str, Any]]):
         """Analyze what information GPT-4.1 actually provided"""
-        print("\n📊 Analyzing GPT-4.1's knowledge:")
+        if not practitioners:
+            print("No practitioners to analyze")
+            return
+
+        print("\n📊 Analyzing GPT's knowledge:")
 
         field_counts = {
             "Business/Trading Name": 0,
@@ -115,38 +161,30 @@ class TPBDataPOC:
 
         for practitioner in practitioners:
             for field in field_counts:
-                # Check various possible field name formats
-                field_variants = [
-                    field,
-                    field.lower().replace(" ", "_"),
-                    field.replace(" ", ""),
-                    field.replace("/", "_").replace(" ", "_")
-                ]
+                value = practitioner.get(field)
+                if value and value != "null" and value != "":
+                    field_counts[field] += 1
 
-                for variant in field_variants:
-                    if practitioner.get(variant) and practitioner[variant] != "null":
-                        field_counts[field] += 1
-                        break
-
-        print("\nField availability from GPT-4.1:")
+        print("\nField availability from GPT:")
         for field, count in field_counts.items():
             percentage = (count / len(practitioners) * 100) if practitioners else 0
             symbol = "✅" if percentage > 50 else "⚠️" if percentage > 0 else "❌"
             print(f"  {symbol} {field}: {count}/{len(practitioners)} ({percentage:.0f}%)")
 
     def search_serper(self, query: str, endpoint: str = "search") -> Dict[str, Any]:
-        """
-        Search using Serper API
-        Endpoints: search, places, news
-        """
+        """Search using Serper API"""
         try:
             conn = http.client.HTTPSConnection("google.serper.dev")
 
-            payload = json.dumps({
+            payload_dict = {
                 "q": query,
-                "gl": "au",
-                "location": "Sydney, Australia" if endpoint == "places" else None
-            })
+                "gl": "au"
+            }
+
+            if endpoint == "places":
+                payload_dict["location"] = "Sydney, Australia"
+
+            payload = json.dumps(payload_dict)
 
             headers = {
                 'X-API-KEY': self.serper_api_key,
@@ -167,40 +205,36 @@ class TPBDataPOC:
             print(f"    ❌ Serper {endpoint} error: {e}")
             return {}
 
-    async def enrich_with_serper(self, practitioner: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Enrich practitioner data using Serper API
-        """
-        name = practitioner.get('Business/Trading Name') or practitioner.get('business_name', 'Unknown')
+    def enrich_with_serper(self, practitioner: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich practitioner data using Serper API"""
+        name = practitioner.get('Business/Trading Name', 'Unknown')
         print(f"\n🔍 Enriching: {name}")
 
         enriched = practitioner.copy()
         enriched['serper_data'] = {}
 
-        # 1. Web Search for general info
+        # 1. Web Search
         print("  📝 Web search...")
         web_results = self.search_serper(f"{name} tax agent Australia")
         enriched['serper_data']['web'] = web_results
 
-        # Extract website from organic results
+        # Extract website from results
         if web_results.get('organic'):
             for result in web_results['organic'][:3]:
                 link = result.get('link', '')
-                # Check if it's likely the company's website
                 if name.lower().replace(' ', '') in link.lower().replace('-', ''):
                     enriched['Website'] = enriched.get('Website') or link
                     print(f"    🌐 Found website: {link}")
                     break
 
-        # 2. Places Search for contact info
+        # 2. Places Search
         print("  📍 Places search...")
-        places_results = self.search_serper(f"{name}")
+        places_results = self.search_serper(f"{name}", "places")
         enriched['serper_data']['places'] = places_results
 
         if places_results.get('places'):
             place = places_results['places'][0]
 
-            # Extract contact information
             if place.get('phoneNumber'):
                 enriched['Phone Number'] = enriched.get('Phone Number') or place['phoneNumber']
                 print(f"    📞 Found phone: {place['phoneNumber']}")
@@ -218,11 +252,9 @@ class TPBDataPOC:
             print("  🔢 Searching for registration number...")
             tpb_search = self.search_serper(f'"{name}" "registration number" site:tpb.gov.au')
 
-            # Try to extract registration number from snippets
             if tpb_search.get('organic'):
                 for result in tpb_search['organic']:
                     snippet = result.get('snippet', '')
-                    # Look for 8-digit numbers (typical TPB format)
                     reg_numbers = re.findall(r'\b\d{8}\b', snippet)
                     if reg_numbers:
                         enriched['Registration Number'] = reg_numbers[0]
@@ -240,10 +272,8 @@ class TPBDataPOC:
 
         return enriched
 
-    async def process_batch(self, practitioners: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Process a batch of practitioners with Serper enrichment
-        """
+    def process_batch(self, practitioners: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Process a batch of practitioners with Serper enrichment"""
         print("\n" + "=" * 60)
         print("ENRICHING WITH SERPER API")
         print("=" * 60)
@@ -254,12 +284,8 @@ class TPBDataPOC:
             print(f"\n[{i}/{len(practitioners)}]" + "-" * 40)
 
             try:
-                enriched = await self.enrich_with_serper(practitioner)
+                enriched = self.enrich_with_serper(practitioner)
                 enriched_results.append(enriched)
-
-                # Rate limiting
-                if i < len(practitioners):
-                    await asyncio.sleep(1)  # Be nice to the API
 
             except Exception as e:
                 print(f"❌ Error enriching practitioner: {e}")
@@ -268,16 +294,11 @@ class TPBDataPOC:
         return enriched_results
 
     def generate_csv_output(self, practitioners: List[Dict[str, Any]], filename: str = None):
-        """
-        Generate CSV output matching TPB requirements
-        """
-        import csv
-
+        """Generate CSV output matching TPB requirements"""
         if not filename:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = f'tpb_poc_results_{timestamp}.csv'
 
-        # Required field names for CSV
         fieldnames = [
             'Business Trading Name',
             'Registration Number',
@@ -287,7 +308,6 @@ class TPBDataPOC:
             'Sufficient Number Individuals (ID(s))',
             'Registration Status',
             'Service Type',
-            # Additional fields for analysis
             'Phone Number',
             'Email Address',
             'Website',
@@ -300,46 +320,38 @@ class TPBDataPOC:
             writer.writeheader()
 
             for practitioner in practitioners:
-                row = {}
-
-                # Map fields (handle various naming conventions)
-                row['Business Trading Name'] = (
-                        practitioner.get('Business/Trading Name') or
-                        practitioner.get('business_name') or
-                        practitioner.get('name', '')
-                )
-
-                row['Registration Number'] = practitioner.get('Registration Number', '')
-                row['Business Address'] = practitioner.get('Business Address', '')
-                row['Registration Date'] = practitioner.get('Registration Date', '')
-                row['Registration Expiry Date'] = practitioner.get('Registration Expiry Date', '')
-                row['Sufficient Number Individuals (ID(s))'] = practitioner.get('Sufficient Number Individuals', '')
-                row['Registration Status'] = practitioner.get('Registration Status', '')
-                row['Service Type'] = practitioner.get('Service Type', 'Tax Agent')  # Default to Tax Agent
-
-                # Additional fields
-                row['Phone Number'] = practitioner.get('Phone Number', '')
-                row['Email Address'] = practitioner.get('Email Address', '')
-                row['Website'] = practitioner.get('Website', '')
-                row['Data Source'] = 'GPT-4.1' if not practitioner.get('serper_data') else 'GPT-4.1 + Serper'
-                row['Completeness'] = practitioner.get('completeness', '0/6')
-
+                row = {
+                    'Business Trading Name': practitioner.get('Business/Trading Name', ''),
+                    'Registration Number': practitioner.get('Registration Number', ''),
+                    'Business Address': practitioner.get('Business Address', ''),
+                    'Registration Date': practitioner.get('Registration Date', ''),
+                    'Registration Expiry Date': practitioner.get('Registration Expiry Date', ''),
+                    'Sufficient Number Individuals (ID(s))': practitioner.get('Sufficient Number Individuals', ''),
+                    'Registration Status': practitioner.get('Registration Status', ''),
+                    'Service Type': practitioner.get('Service Type', 'Tax Agent'),
+                    'Phone Number': practitioner.get('Phone Number', ''),
+                    'Email Address': practitioner.get('Email Address', ''),
+                    'Website': practitioner.get('Website', ''),
+                    'Data Source': 'GPT + Serper' if practitioner.get('serper_data') else 'GPT Only',
+                    'Completeness': practitioner.get('completeness', '0/6')
+                }
                 writer.writerow(row)
 
         print(f"\n💾 CSV saved to: {filename}")
         return filename
 
     def generate_report(self, practitioners: List[Dict[str, Any]]):
-        """
-        Generate summary report
-        """
+        """Generate summary report"""
         print("\n" + "=" * 60)
         print("FINAL REPORT")
         print("=" * 60)
 
+        if not practitioners:
+            print("No practitioners to report on")
+            return
+
         total = len(practitioners)
 
-        # Calculate statistics
         stats = {
             'with_reg_number': sum(1 for p in practitioners if p.get('Registration Number')),
             'with_address': sum(1 for p in practitioners if p.get('Business Address')),
@@ -351,13 +363,17 @@ class TPBDataPOC:
 
         print(f"\n📊 Data Completeness:")
         print(f"  Total Practitioners: {total}")
-        print(
-            f"  ✅ With Registration Number: {stats['with_reg_number']} ({stats['with_reg_number'] / total * 100:.0f}%)")
-        print(f"  ✅ With Business Address: {stats['with_address']} ({stats['with_address'] / total * 100:.0f}%)")
-        print(f"  ✅ With Phone Number: {stats['with_phone']} ({stats['with_phone'] / total * 100:.0f}%)")
-        print(f"  ✅ With Email Address: {stats['with_email']} ({stats['with_email'] / total * 100:.0f}%)")
-        print(f"  ✅ With Website: {stats['with_website']} ({stats['with_website'] / total * 100:.0f}%)")
-        print(f"  ✅ With Registration Dates: {stats['with_dates']} ({stats['with_dates'] / total * 100:.0f}%)")
+        for key, label in [
+            ('with_reg_number', 'Registration Number'),
+            ('with_address', 'Business Address'),
+            ('with_phone', 'Phone Number'),
+            ('with_email', 'Email Address'),
+            ('with_website', 'Website'),
+            ('with_dates', 'Registration Dates')
+        ]:
+            count = stats[key]
+            pct = (count / total * 100) if total > 0 else 0
+            print(f"  ✅ With {label}: {count} ({pct:.0f}%)")
 
         print(f"\n💳 API Usage:")
         print(f"  Serper Credits Used: {self.serper_credits_used}")
@@ -365,7 +381,7 @@ class TPBDataPOC:
 
         print(f"\n📝 Sample Results:")
         for i, p in enumerate(practitioners[:3], 1):
-            name = p.get('Business/Trading Name') or p.get('business_name', 'Unknown')
+            name = p.get('Business/Trading Name', 'Unknown')
             print(f"\n  {i}. {name}")
             if p.get('Registration Number'):
                 print(f"     Reg #: {p['Registration Number']}")
@@ -373,36 +389,33 @@ class TPBDataPOC:
                 print(f"     Phone: {p['Phone Number']}")
             if p.get('Website'):
                 print(f"     Website: {p['Website']}")
-            print(f"     Completeness: {p.get('completeness', 'N/A')}")
 
-    async def run_poc(self, location: str = "Sydney", count: int = 10):
-        """
-        Run the full POC test
-        """
+    def run_poc(self, location: str = "Sydney", count: int = 10):
+        """Run the full POC test"""
         print("=" * 60)
         print("TAX PRACTITIONER DATA POC")
-        print(f"Testing GPT-4.1 + Serper API")
+        print(f"Testing Azure GPT-4 + Serper API")
         print(f"Location: {location}, Count: {count}")
         print("=" * 60)
 
-        # Step 1: Query GPT-4.1
-        practitioners = await self.query_gpt_for_practitioners(location, count)
+        # Step 1: Query GPT
+        practitioners = self.query_gpt_for_practitioners(location, count)
 
         if not practitioners:
-            print("❌ No practitioners returned from GPT-4.1")
+            print("❌ No practitioners returned from GPT")
             return []
 
-        # Save GPT-only results for comparison
-        gpt_only_file = f'tpb_gpt_only_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-        with open(gpt_only_file, 'w') as f:
+        # Save GPT-only results
+        gpt_file = f'tpb_gpt_only_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+        with open(gpt_file, 'w') as f:
             json.dump(practitioners, f, indent=2)
-        print(f"\n💾 GPT-only results saved to: {gpt_only_file}")
+        print(f"\n💾 GPT-only results saved to: {gpt_file}")
 
         # Step 2: Enrich with Serper
-        enriched_practitioners = await self.process_batch(practitioners)
+        enriched_practitioners = self.process_batch(practitioners)
 
         # Step 3: Generate outputs
-        csv_file = self.generate_csv_output(enriched_practitioners)
+        self.generate_csv_output(enriched_practitioners)
 
         # Save enriched JSON
         enriched_file = f'tpb_enriched_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
@@ -416,49 +429,68 @@ class TPBDataPOC:
         return enriched_practitioners
 
 
-async def main():
-    """
-    Main POC runner
-    """
-    # API Keys - replace with your actual keys
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-api-key")
-    SERPER_API_KEY = os.getenv("SERPER_API_KEY", "99c44b79892f5f7499accf2d7c26d93313880937")
+def main():
+    """Main POC runner"""
+    # Load credentials from .env
+    AZURE_KEY = os.getenv("AZURE_OPENAI_KEY")
+    AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AZURE_VERSION = os.getenv("AZURE_API_VERSION", "2024-02-01")
+    SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+
+    # Deployment name - try common names
+    DEPLOYMENT_NAME = "gpt-4.1"  # Change this to your actual deployment name
+
+    if not AZURE_KEY or not AZURE_ENDPOINT:
+        print("❌ Missing Azure OpenAI credentials in .env file")
+        return
+
+    if not SERPER_API_KEY:
+        print("❌ Missing Serper API key in .env file")
+        return
+
+    print("✅ Loaded credentials from .env file")
+    print(f"📍 Using Azure endpoint: {AZURE_ENDPOINT}")
+    print(f"🤖 Using deployment: {DEPLOYMENT_NAME}")
+
+    # Try to list available deployments (for debugging)
+    try:
+        from azure.core.credentials import AzureKeyCredential
+        print("\n🔍 Attempting to connect to Azure OpenAI...")
+    except:
+        pass
 
     # Create POC instance
-    poc = TPBDataPOC(OPENAI_API_KEY, SERPER_API_KEY)
+    poc = TPBDataPOC(AZURE_KEY, AZURE_ENDPOINT, AZURE_VERSION, SERPER_API_KEY, DEPLOYMENT_NAME)
 
     # Run POC test
-    # Start with small batch to test
-    results = await poc.run_poc(location="Sydney", count=10)
+    results = poc.run_poc(location="Sydney", count=5)  # Start with just 5 for testing
 
     print("\n" + "=" * 60)
     print("POC COMPLETE")
     print("=" * 60)
 
     print("\n🎯 Key Findings:")
-    print("1. GPT-4.1 Knowledge: Check what fields it actually knows")
+    print("1. GPT Knowledge: Check what fields it actually knows")
     print("2. Serper Enrichment: See how much additional data we can get")
-    print("3. Cost Analysis: Calculate actual API costs for full dataset")
-    print("4. Data Quality: Assess if this approach meets requirements")
+    print("3. Cost Analysis: Calculate actual API costs")
 
-    print("\n📈 Scaling to 80,000 records:")
-    if poc.serper_credits_used > 0:
-        credits_per_record = poc.serper_credits_used / len(results) if results else 0
+    if poc.serper_credits_used > 0 and results:
+        credits_per_record = poc.serper_credits_used / len(results)
         total_credits = credits_per_record * 80000
-        total_cost = total_credits * 0.0003  # $0.30 per 1000
+        total_cost = total_credits * 0.0003
+        print(f"\n📈 Scaling to 80,000 records:")
         print(f"  Estimated Serper credits: {total_credits:,.0f}")
         print(f"  Estimated Serper cost: ${total_cost:,.2f}")
-        print(f"  GPT-4.1 cost: Would depend on token usage")
 
     return results
 
 
 if __name__ == "__main__":
     # Run the POC
-    asyncio.run(main()
+    results = main()
 
     print("\n💡 Next Steps:")
-    print("1. Review GPT-4.1's actual knowledge of tax practitioners")
+    print("1. Review GPT's actual knowledge of tax practitioners")
     print("2. Assess if Serper enrichment provides enough value")
     print("3. Compare with direct TPB scraping approach")
     print("4. Decide on most cost-effective solution")
