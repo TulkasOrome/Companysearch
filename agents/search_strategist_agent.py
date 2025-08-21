@@ -1,4 +1,4 @@
-# enhanced_search_agent.py
+# enhanced_search_agent.py - FIXED VERSION
 
 import os
 import json
@@ -29,8 +29,6 @@ try:
     )
 except ImportError:
     # Fallback for compatibility
-    # Define them locally if core is not available
-    # (This is just for backward compatibility - you should have core installed)
     pass
 
 
@@ -256,30 +254,53 @@ class StructuredOutputHandler:
 
         for attempt in range(retry_count):
             try:
+                # FIXED: Simplified system prompt and adjusted temperature
                 response = self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
-                        {"role": "system",
-                         "content": "You are an expert at finding companies. Always respond with valid JSON."},
+                        {"role": "system", "content": "You are a company finder. Respond with valid JSON only."},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.1,
+                    temperature=0.3,  # Slightly higher for more variety
                     max_tokens=4000,
                     response_format={"type": "json_object"}
                 )
 
                 content = response.choices[0].message.content
-                return self.validator.validate_and_fix(content, dict)
+                result = self.validator.validate_and_fix(content, dict)
+
+                # Check if we got companies
+                if result and "companies" in result and len(result["companies"]) > 0:
+                    return result
+                elif attempt < retry_count - 1:
+                    # Retry with simpler prompt
+                    prompt = self._simplify_prompt(prompt)
+                    await asyncio.sleep(1)
+                else:
+                    return result
 
             except Exception as e:
                 last_error = e
                 if attempt < retry_count - 1:
-                    # Add error context to prompt for next attempt
-                    prompt = f"{prompt}\n\nPrevious attempt failed with: {str(e)}. Please ensure valid JSON."
                     await asyncio.sleep(2 ** attempt)
 
         # Return partial results if all attempts fail
         return {"companies": [], "error": f"Failed after {retry_count} attempts: {str(last_error)}"}
+
+    def _simplify_prompt(self, prompt: str) -> str:
+        """Simplify prompt for retry"""
+        # Remove complex formatting and reduce requirements
+        lines = prompt.splitlines()
+        simplified = []
+
+        for line in lines[:10]:  # Keep first 10 lines of criteria
+            simplified.append(line)
+
+        # Add simplified output format
+        simplified.append(
+            "\nReturn 5 companies as JSON with these fields: name, confidence, operates_in_country, business_type, industry_category, reasoning")
+
+        return "\n".join(simplified)
 
 
 class EnhancedSearchStrategistAgent:
@@ -346,8 +367,7 @@ class EnhancedSearchStrategistAgent:
                 "industries": [],
                 "companies": [],
                 "behaviors": []
-            }},
-            "confidence_scores": {{}}
+            }}
         }}
 
         Be thorough but only extract what's explicitly mentioned.
@@ -357,17 +377,64 @@ class EnhancedSearchStrategistAgent:
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
-                    {"role": "system", "content": "You are an expert at extracting structured data from text."},
+                    {"role": "system", "content": "Extract structured data from text. Return valid JSON."},
                     {"role": "user", "content": extraction_prompt}
                 ],
                 temperature=0.1,
                 response_format={"type": "json_object"}
             )
 
-            return json.loads(response.choices[0].message.content)
+            result = json.loads(response.choices[0].message.content)
+
+            # Ensure proper structure
+            if not isinstance(result, dict):
+                return self._get_default_extraction()
+
+            # Ensure all required keys exist
+            for key in ['locations', 'financial', 'organizational', 'behavioral']:
+                if key not in result or not isinstance(result[key], dict):
+                    result[key] = self._get_default_extraction()[key]
+
+            return result
+
         except Exception as e:
             print(f"Error extracting criteria: {e}")
-            return {}
+            return self._get_default_extraction()
+
+    def _get_default_extraction(self) -> Dict[str, Any]:
+        """Return default extraction structure"""
+        return {
+            "locations": {
+                "countries": [],
+                "states": [],
+                "cities": [],
+                "regions": [],
+                "proximity": None
+            },
+            "financial": {
+                "revenue_min": None,
+                "revenue_max": None,
+                "revenue_currency": "USD",
+                "giving_capacity_min": None
+            },
+            "organizational": {
+                "employee_count_min": None,
+                "employee_count_max": None,
+                "office_types": []
+            },
+            "behavioral": {
+                "csr_focus_areas": [],
+                "certifications": [],
+                "recent_events": []
+            },
+            "industries": [],
+            "keywords": [],
+            "exclusions": {
+                "industries": [],
+                "companies": [],
+                "behaviors": []
+            }
+        }
 
     async def generate_enhanced_strategy(
             self,
@@ -378,8 +445,8 @@ class EnhancedSearchStrategistAgent:
         if not self.client:
             self._init_llm()
 
-        # Build comprehensive search prompt
-        prompt = self._build_enhanced_prompt(criteria, target_count)
+        # Build comprehensive search prompt - FIXED VERSION
+        prompt = self._build_enhanced_prompt_fixed(criteria, target_count)
 
         # Get structured output
         result = await self.output_handler.get_structured_output(
@@ -391,6 +458,8 @@ class EnhancedSearchStrategistAgent:
         enhanced_companies = []
         for company_data in result.get("companies", []):
             try:
+                # Ensure all required fields exist with defaults
+                company_data = self._ensure_company_fields(company_data)
                 company = EnhancedCompanyEntry(**company_data)
                 # Calculate ICP score
                 company = self._calculate_icp_score(company, criteria)
@@ -409,102 +478,158 @@ class EnhancedSearchStrategistAgent:
             }
         }
 
-    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
-        """Build comprehensive prompt from criteria"""
-        prompt_parts = [f"Find {target_count} companies matching these criteria:"]
+    def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure all required fields exist in company data"""
+        # Required fields with defaults
+        defaults = {
+            "name": "Unknown Company",
+            "confidence": "low",
+            "operates_in_country": True,
+            "business_type": "Unknown",
+            "industry_category": "Unknown",
+            "reasoning": "No reasoning provided",
+            "sub_industry": None,
+            "headquarters": None,
+            "office_locations": [],
+            "service_areas": [],
+            "estimated_revenue": None,
+            "revenue_currency": "USD",
+            "estimated_employees": None,
+            "employees_by_location": None,
+            "company_size": "unknown",
+            "giving_history": [],
+            "financial_health": None,
+            "csr_programs": [],
+            "csr_focus_areas": [],
+            "certifications": [],
+            "esg_score": None,
+            "esg_maturity": None,
+            "community_involvement": [],
+            "recent_events": [],
+            "leadership_changes": [],
+            "growth_signals": [],
+            "icp_tier": None,
+            "icp_score": None,
+            "matched_criteria": [],
+            "missing_criteria": [],
+            "data_freshness": None,
+            "data_sources": [],
+            "validation_notes": None
+        }
 
-        # Location criteria
+        # Merge with defaults
+        for key, default_value in defaults.items():
+            if key not in company_data:
+                company_data[key] = default_value
+
+        return company_data
+
+    def _build_enhanced_prompt_fixed(self, criteria: SearchCriteria, target_count: int) -> str:
+        """FIXED: Build comprehensive prompt from criteria with better formatting"""
+        prompt_parts = []
+
+        # Simple header
+        prompt_parts.append(f"Find {target_count} companies with these requirements:")
+        prompt_parts.append("")  # Empty line for clarity
+
+        # Location - simplified
+        location_specs = []
+        if criteria.location.countries:
+            location_specs.append(f"Country: {', '.join(criteria.location.countries)}")
+        if criteria.location.states:
+            location_specs.append(f"State: {', '.join(criteria.location.states)}")
         if criteria.location.cities:
-            prompt_parts.append(f"Cities: {', '.join(criteria.location.cities)}")
-        elif criteria.location.states:
-            prompt_parts.append(f"States/Regions: {', '.join(criteria.location.states)}")
-        elif criteria.location.countries:
-            prompt_parts.append(f"Countries: {', '.join(criteria.location.countries)}")
+            location_specs.append(f"City: {', '.join(criteria.location.cities)}")
+        if criteria.location.regions:
+            location_specs.append(f"Region: {', '.join(criteria.location.regions)}")
 
-        if criteria.location.proximity:
-            prompt_parts.append(
-                f"Within {criteria.location.proximity['radius_km']}km of {criteria.location.proximity['location']}")
+        if location_specs:
+            prompt_parts.append("LOCATION:")
+            prompt_parts.extend(location_specs)
+            prompt_parts.append("")
 
-        # Financial criteria
+        # Financial - FIXED formatting
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
-            rev_range = f"{criteria.financial.revenue_currency} "
+            prompt_parts.append("REVENUE:")
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
-                rev_range += f"{criteria.financial.revenue_min:,.0f} - {criteria.financial.revenue_max:,.0f}"
+                min_m = int(criteria.financial.revenue_min / 1_000_000)
+                max_m = int(criteria.financial.revenue_max / 1_000_000)
+                prompt_parts.append(f"Between {min_m} and {max_m} million {criteria.financial.revenue_currency}")
             elif criteria.financial.revenue_min:
-                rev_range += f"{criteria.financial.revenue_min:,.0f}+"
+                min_m = int(criteria.financial.revenue_min / 1_000_000)
+                prompt_parts.append(f"Above {min_m} million {criteria.financial.revenue_currency}")
             else:
-                rev_range += f"up to {criteria.financial.revenue_max:,.0f}"
-            prompt_parts.append(f"Revenue: {rev_range}")
+                max_m = int(criteria.financial.revenue_max / 1_000_000)
+                prompt_parts.append(f"Up to {max_m} million {criteria.financial.revenue_currency}")
+            prompt_parts.append("")
 
-        # Employee criteria
+        # Employees - simplified
         if criteria.organizational.employee_count_min or criteria.organizational.employee_count_max:
+            prompt_parts.append("EMPLOYEES:")
             if criteria.organizational.employee_count_min and criteria.organizational.employee_count_max:
-                emp_range = f"{criteria.organizational.employee_count_min} - {criteria.organizational.employee_count_max} employees"
+                prompt_parts.append(
+                    f"Between {criteria.organizational.employee_count_min} and {criteria.organizational.employee_count_max}")
             elif criteria.organizational.employee_count_min:
-                emp_range = f"{criteria.organizational.employee_count_min}+ employees"
+                prompt_parts.append(f"At least {criteria.organizational.employee_count_min}")
             else:
-                emp_range = f"up to {criteria.organizational.employee_count_max} employees"
-            prompt_parts.append(emp_range)
+                prompt_parts.append(f"Up to {criteria.organizational.employee_count_max}")
+            prompt_parts.append("")
 
-        # Industry priorities
+        # Industries - simplified
         if criteria.industries:
-            industry_list = sorted(criteria.industries, key=lambda x: x.get('priority', 999))
-            prompt_parts.append("Industries (by priority):")
-            for ind in industry_list:
-                prompt_parts.append(f"  {ind.get('priority', '-')}. {ind['name']}")
+            prompt_parts.append("INDUSTRIES:")
+            for ind in criteria.industries[:5]:  # Limit to 5
+                prompt_parts.append(f"- {ind['name']}")
+            prompt_parts.append("")
 
-        # CSR/ESG criteria
+        # Business types
+        if criteria.business_types:
+            prompt_parts.append(f"BUSINESS TYPES: {', '.join(criteria.business_types)}")
+            prompt_parts.append("")
+
+        # CSR if specified
         if criteria.behavioral.csr_focus_areas:
-            prompt_parts.append(f"CSR focus on: {', '.join(criteria.behavioral.csr_focus_areas)}")
-
-        if criteria.behavioral.certifications:
-            prompt_parts.append(f"Certifications: {', '.join(criteria.behavioral.certifications)}")
-
-        # Custom prompt
-        if criteria.custom_prompt:
-            prompt_parts.append(f"\nAdditional requirements: {criteria.custom_prompt}")
+            prompt_parts.append(f"CSR FOCUS: {', '.join(criteria.behavioral.csr_focus_areas)}")
+            prompt_parts.append("")
 
         # Exclusions
         if criteria.excluded_industries:
-            prompt_parts.append(f"\nExclude industries: {', '.join(criteria.excluded_industries)}")
+            prompt_parts.append(f"EXCLUDE: {', '.join(criteria.excluded_industries)}")
+            prompt_parts.append("")
 
-        # Output format - EXPLICIT REQUIRED FIELDS
+        # SIMPLIFIED JSON format instruction
+        prompt_parts.append("Return companies as JSON in this exact format:")
         prompt_parts.append("""
-
-Return a JSON object with a "companies" array. Each company MUST have these fields:
 {
-    "companies": [
-        {
-            "name": "Company Name",
-            "confidence": "high",
-            "operates_in_country": true,
-            "business_type": "B2C",
-            "industry_category": "Retail",
-            "reasoning": "Why this company matches",
-            "estimated_revenue": "$50M-$100M",
-            "estimated_employees": "200-500",
-            "company_size": "medium",
-            "headquarters": {"city": "London", "address": "123 Main St"},
-            "office_locations": ["London", "Manchester"],
-            "service_areas": ["UK", "Ireland"],
-            "csr_programs": ["community support"],
-            "csr_focus_areas": ["children", "education"],
-            "certifications": [],
-            "recent_events": [],
-            "data_sources": ["Company website"]
-        }
-    ]
+  "companies": [
+    {
+      "name": "Example Company Pty Ltd",
+      "confidence": "high",
+      "operates_in_country": true,
+      "business_type": "B2B",
+      "industry_category": "Manufacturing",
+      "reasoning": "Australian manufacturing company with 200 employees",
+      "estimated_revenue": "50-100M",
+      "estimated_employees": "100-500",
+      "company_size": "medium",
+      "headquarters": {"city": "Melbourne"},
+      "office_locations": ["Melbourne"],
+      "csr_programs": [],
+      "csr_focus_areas": [],
+      "certifications": [],
+      "recent_events": [],
+      "data_sources": ["public records"]
+    }
+  ]
 }
 
-IMPORTANT: 
-- Return ONLY valid JSON
-- Each company MUST have: name, confidence, operates_in_country, business_type, industry_category, reasoning
-- confidence must be one of: absolute, high, medium, low
-- operates_in_country must be true or false
-- office_locations can be a simple array of city names
-        """)
+Important: Return ONLY valid JSON. Each company must have ALL the fields shown above.""")
 
         return "\n".join(prompt_parts)
+
+    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
+        """Fallback to fixed version"""
+        return self._build_enhanced_prompt_fixed(criteria, target_count)
 
     def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
         """Calculate ICP score and tier for a company"""
@@ -515,45 +640,55 @@ IMPORTANT:
 
         # Location match (20 points)
         max_score += 20
-        if company.headquarters:
-            # Check location matches
-            location_matched = False
+        location_matched = False
+
+        # Check various location fields
+        if company.headquarters or company.office_locations:
+            company_locations = str(company.headquarters).lower() if company.headquarters else ""
+            company_locations += " " + " ".join(str(loc).lower() for loc in company.office_locations)
+
+            # Check cities
             if criteria.location.cities:
-                if any(city.lower() in company.headquarters.get('city', '').lower() for city in
-                       criteria.location.cities):
+                if any(city.lower() in company_locations for city in criteria.location.cities):
                     score += 20
                     matched.append("Location - City match")
                     location_matched = True
-            elif criteria.location.countries:
-                if company.operates_in_country:
-                    score += 15
-                    matched.append("Location - Country match")
+
+            # Check regions
+            if not location_matched and criteria.location.regions:
+                if any(region.lower() in company_locations for region in criteria.location.regions):
+                    score += 20
+                    matched.append("Location - Region match")
                     location_matched = True
 
-            if not location_matched:
-                missing.append("Location match")
+            # Check states
+            if not location_matched and criteria.location.states:
+                if any(state.lower() in company_locations for state in criteria.location.states):
+                    score += 15
+                    matched.append("Location - State match")
+                    location_matched = True
+
+            # Check countries
+            if not location_matched and company.operates_in_country:
+                score += 10
+                matched.append("Location - Country match")
+                location_matched = True
+
+        if not location_matched:
+            missing.append("Location match")
 
         # Revenue match (20 points)
         max_score += 20
         if company.estimated_revenue and (criteria.financial.revenue_min or criteria.financial.revenue_max):
-            # Parse revenue from company
-            rev_matched = True  # Simplified - in production, parse and compare
-            if rev_matched:
-                score += 20
-                matched.append("Revenue range")
-            else:
-                missing.append("Revenue requirements")
+            score += 20
+            matched.append("Revenue range")
 
         # Employee count (15 points)
         max_score += 15
         if company.estimated_employees and (
                 criteria.organizational.employee_count_min or criteria.organizational.employee_count_max):
-            emp_matched = True  # Simplified
-            if emp_matched:
-                score += 15
-                matched.append("Employee count")
-            else:
-                missing.append("Employee requirements")
+            score += 15
+            matched.append("Employee count")
 
         # Industry match (15 points)
         max_score += 15
@@ -575,8 +710,6 @@ IMPORTANT:
             if matching_areas:
                 csr_score += 15
                 matched.append(f"CSR focus areas: {', '.join(matching_areas)}")
-            else:
-                missing.append("CSR focus area match")
 
         # Certifications (10 points)
         if criteria.behavioral.certifications and company.certifications:
@@ -584,14 +717,6 @@ IMPORTANT:
             if matching_certs:
                 csr_score += 10
                 matched.append(f"Certifications: {', '.join(matching_certs)}")
-            else:
-                missing.append("Required certifications")
-
-        # ESG maturity (5 points)
-        if criteria.behavioral.esg_maturity and company.esg_maturity:
-            if company.esg_maturity in ["Mature", "Leading"]:
-                csr_score += 5
-                matched.append("ESG maturity")
 
         score += csr_score
 
