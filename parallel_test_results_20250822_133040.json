@@ -1,0 +1,170 @@
+{
+  "summary": {
+    "total_tests": 15,
+    "successful_tests": 15,
+    "failed_tests": 0,
+    "average_response_time": 0.4101954778035482,
+    "total_execution_time": 6.152932167053223,
+    "deployments_tested": [
+      "gpt-4.1-2",
+      "gpt-4.1-3",
+      "gpt-4.1-5",
+      "gpt-4.1",
+      "gpt-4.1-4"
+    ],
+    "tokens_used": 581,
+    "timestamp": "2025-08-22T13:30:40.264644"
+  },
+  "detailed_results": [
+    {
+      "deployment": "gpt-4.1",
+      "test_name": "connectivity",
+      "success": true,
+      "response_time": 0.3597848415374756,
+      "tokens_used": 28,
+      "error": null,
+      "response_content": "OK",
+      "timestamp": "2025-08-22T13:30:27.553752"
+    },
+    {
+      "deployment": "gpt-4.1-2",
+      "test_name": "connectivity",
+      "success": true,
+      "response_time": 0.32294774055480957,
+      "tokens_used": 28,
+      "error": null,
+      "response_content": "OK",
+      "timestamp": "2025-08-22T13:30:27.877728"
+    },
+    {
+      "deployment": "gpt-4.1-3",
+      "test_name": "connectivity",
+      "success": true,
+      "response_time": 0.2520322799682617,
+      "tokens_used": 28,
+      "error": null,
+      "response_content": "OK",
+      "timestamp": "2025-08-22T13:30:28.130725"
+    },
+    {
+      "deployment": "gpt-4.1-4",
+      "test_name": "connectivity",
+      "success": true,
+      "response_time": 0.3041396141052246,
+      "tokens_used": 28,
+      "error": null,
+      "response_content": "OK",
+      "timestamp": "2025-08-22T13:30:28.434865"
+    },
+    {
+      "deployment": "gpt-4.1-5",
+      "test_name": "connectivity",
+      "success": true,
+      "response_time": 0.277024507522583,
+      "tokens_used": 28,
+      "error": null,
+      "response_content": "OK",
+      "timestamp": "2025-08-22T13:30:28.712895"
+    },
+    {
+      "deployment": "gpt-4.1",
+      "test_name": "async_parallel",
+      "success": true,
+      "response_time": 0.4969804286956787,
+      "tokens_used": 45,
+      "error": null,
+      "response_content": "Threads dance side by side,  \nTasks weaving in silent sync\u2014  \nSpeed blooms in still code.",
+      "timestamp": "2025-08-22T13:30:29.211895"
+    },
+    {
+      "deployment": "gpt-4.1-2",
+      "test_name": "async_parallel",
+      "success": true,
+      "response_time": 0.4889981746673584,
+      "tokens_used": 43,
+      "error": null,
+      "response_content": "Threads run side by side\u2014  \nSilent currents intertwine,  \nTasks converge as one.",
+      "timestamp": "2025-08-22T13:30:29.218862"
+    },
+    {
+      "deployment": "gpt-4.1-3",
+      "test_name": "async_parallel",
+      "success": true,
+      "response_time": 0.4750325679779053,
+      "tokens_used": 43,
+      "error": null,
+      "response_content": "Threads run side by side,  \nTasks divide and swiftly merge\u2014  \nSpeed in harmony.",
+      "timestamp": "2025-08-22T13:30:29.206896"
+    },
+    {
+      "deployment": "gpt-4.1-4",
+      "test_name": "async_parallel",
+      "success": true,
+      "response_time": 0.4770019054412842,
+      "tokens_used": 44,
+      "error": null,
+      "response_content": "Threads dance side by side,  \nTasks split, weaving harmony\u2014  \nSpeed blooms in silence.",
+      "timestamp": "2025-08-22T13:30:29.210908"
+    },
+    {
+      "deployment": "gpt-4.1-5",
+      "test_name": "async_parallel",
+      "success": true,
+      "response_time": 0.4909639358520508,
+      "tokens_used": 44,
+      "error": null,
+      "response_content": "Threads intertwining,  \nTasks split, racing side by side\u2014  \nSpeed blooms in silence.",
+      "timestamp": "2025-08-22T13:30:29.226861"
+    },
+    {
+      "deployment": "gpt-4.1",
+      "test_name": "thread_parallel",
+      "success": true,
+      "response_time": 0.4100005626678467,
+      "tokens_used": 44,
+      "error": null,
+      "response_content": "Threads race side by side,  \nTasks divided, time compressed\u2014  \nSpeed blooms in silence.",
+      "timestamp": "2025-08-22T13:30:29.637862"
+    },
+    {
+      "deployment": "gpt-4.1-4",
+      "test_name": "thread_parallel",
+      "success": true,
+      "response_time": 0.42800021171569824,
+      "tokens_used": 44,
+      "error": null,
+      "response_content": "Threads dance side by side,  \nTasks weaving through silent cores\u2014  \nSpeed blooms in silence.",
+      "timestamp": "2025-08-22T13:30:29.662862"
+    },
+    {
+      "deployment": "gpt-4.1-5",
+      "test_name": "thread_parallel",
+      "success": true,
+      "response_time": 0.42800021171569824,
+      "tokens_used": 45,
+      "error": null,
+      "response_content": "Threads race side by side,  \nTasks divide, unite as one\u2014  \nSwift minds intertwine.",
+      "timestamp": "2025-08-22T13:30:29.664863"
+    },
+    {
+      "deployment": "gpt-4.1-2",
+      "test_name": "thread_parallel",
+      "success": true,
+      "response_time": 0.4570002555847168,
+      "tokens_used": 45,
+      "error": null,
+      "response_content": "Tasks side by side run,  \nSilent threads weaving their work\u2014  \nSpeed blooms in the code.",
+      "timestamp": "2025-08-22T13:30:29.687864"
+    },
+    {
+      "deployment": "gpt-4.1-3",
+      "test_name": "thread_parallel",
+      "success": true,
+      "response_time": 0.48502492904663086,
+      "tokens_used": 44,
+      "error": null,
+      "response_content": "Threads race side by side,  \nTasks divided, swift as light\u2014  \nHarmony in code.",
+      "timestamp": "2025-08-22T13:30:29.717888"
+    }
+  ]
+}

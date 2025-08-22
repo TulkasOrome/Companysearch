@@ -1,7 +1,7 @@
 # streamlit_app.py
 """
-Enhanced Streamlit App with Advanced Validation Modes
-Fixed version with proper imports and all original features retained
+Enhanced Streamlit App with Parallel Model Execution
+Updated version with parallel GPT-4.1 deployment support
 """
 
 import streamlit as st
@@ -164,6 +164,9 @@ class EnhancedCompanyEntry(BaseModel):
     data_freshness: Optional[str] = Field(default=None)
     data_sources: List[str] = Field(default_factory=list)
     validation_notes: Optional[str] = Field(default=None)
+
+    # Parallel execution tracking
+    source_model: Optional[str] = Field(default=None)  # Track which model generated this company
 
 
 # ============================================================================
@@ -408,6 +411,8 @@ class EnhancedSearchStrategistAgent:
             for company_data in result.get("companies", []):
                 try:
                     company_data = self._ensure_company_fields(company_data)
+                    # Add source model tracking
+                    company_data['source_model'] = self.deployment_name
                     company = EnhancedCompanyEntry(**company_data)
                     company = self._calculate_icp_score(company, criteria)
                     enhanced_companies.append(company)
@@ -426,8 +431,8 @@ class EnhancedSearchStrategistAgent:
             }
 
         except Exception as e:
-            print(f"Search error: {e}")
-            return {"companies": [], "error": str(e)}
+            print(f"Search error in {self.deployment_name}: {e}")
+            return {"companies": [], "error": str(e), "deployment": self.deployment_name}
 
     def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure all required fields exist in company data"""
@@ -464,7 +469,8 @@ class EnhancedSearchStrategistAgent:
             "missing_criteria": [],
             "data_freshness": None,
             "data_sources": [],
-            "validation_notes": None
+            "validation_notes": None,
+            "source_model": None
         }
 
         for key, default_value in defaults.items():
@@ -582,6 +588,105 @@ class EnhancedSearchStrategistAgent:
 
 
 # ============================================================================
+# PARALLEL EXECUTION HELPER FUNCTIONS
+# ============================================================================
+
+async def execute_parallel_search(
+        models: List[str],
+        criteria: SearchCriteria,
+        target_count: int
+) -> Dict[str, Any]:
+    """Execute search across multiple models in parallel"""
+
+    # Calculate per-model target
+    per_model_count = max(10, target_count // len(models))
+    remainder = target_count % len(models)
+
+    # Create tasks for each model
+    tasks = []
+    model_targets = {}
+
+    for i, model in enumerate(models):
+        # Distribute remainder across first models
+        model_target = per_model_count + (1 if i < remainder else 0)
+        model_targets[model] = model_target
+
+        # Create agent and task
+        agent = EnhancedSearchStrategistAgent(deployment_name=model)
+        task = agent.generate_enhanced_strategy(criteria, target_count=model_target)
+        tasks.append(task)
+
+    # Execute all tasks in parallel
+    start_time = time.time()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    execution_time = time.time() - start_time
+
+    # Process results
+    all_companies = []
+    model_stats = {}
+    successful_models = []
+    failed_models = []
+
+    for model, result in zip(models, results):
+        if isinstance(result, Exception):
+            # Handle failed model
+            failed_models.append(model)
+            model_stats[model] = {
+                'status': 'failed',
+                'error': str(result),
+                'companies_found': 0
+            }
+        elif isinstance(result, dict):
+            if 'error' in result:
+                # Model returned error
+                failed_models.append(model)
+                model_stats[model] = {
+                    'status': 'error',
+                    'error': result.get('error'),
+                    'companies_found': 0
+                }
+            else:
+                # Success
+                companies = result.get('companies', [])
+                all_companies.extend(companies)
+                successful_models.append(model)
+                model_stats[model] = {
+                    'status': 'success',
+                    'companies_found': len(companies),
+                    'target': model_targets[model]
+                }
+
+    # Deduplicate companies by name
+    seen_names = set()
+    unique_companies = []
+    duplicates_removed = 0
+
+    for company in all_companies:
+        company_name = company.name.lower().strip()
+        if company_name not in seen_names:
+            seen_names.add(company_name)
+            unique_companies.append(company)
+        else:
+            duplicates_removed += 1
+
+    return {
+        'companies': unique_companies,
+        'metadata': {
+            'parallel_execution': True,
+            'models_used': models,
+            'successful_models': successful_models,
+            'failed_models': failed_models,
+            'model_stats': model_stats,
+            'total_companies_before_dedup': len(all_companies),
+            'total_companies_after_dedup': len(unique_companies),
+            'duplicates_removed': duplicates_removed,
+            'execution_time': execution_time,
+            'timestamp': datetime.now().isoformat()
+        }
+    }
+
+
+# ============================================================================
 # VALIDATION FUNCTION
 # ============================================================================
 
@@ -624,7 +729,7 @@ except ImportError:
     print("Warning: Serper validation not available, using mock data")
 
 # ============================================================================
-# STREAMLIT APP - ORIGINAL WITH ALL FEATURES
+# STREAMLIT APP - WITH PARALLEL EXECUTION
 # ============================================================================
 
 # Page config
@@ -651,6 +756,14 @@ if 'current_tier' not in st.session_state:
     st.session_state.current_tier = "A"
 if 'selected_models' not in st.session_state:
     st.session_state.selected_models = ["gpt-4.1"]
+if 'parallel_execution_enabled' not in st.session_state:
+    st.session_state.parallel_execution_enabled = False
+if 'model_results' not in st.session_state:
+    st.session_state.model_results = {}
+if 'model_execution_times' not in st.session_state:
+    st.session_state.model_execution_times = {}
+if 'model_success_status' not in st.session_state:
+    st.session_state.model_success_status = {}
 
 # Initialize ICP manager
 icp_manager = ICPManager()
@@ -678,6 +791,7 @@ with st.sidebar:
 
     if num_models == 1:
         selected_models = [st.selectbox("Select Model", available_models)]
+        st.session_state.parallel_execution_enabled = False
     else:
         selected_models = st.multiselect(
             "Select Models",
@@ -685,9 +799,15 @@ with st.sidebar:
             default=available_models[:num_models],
             max_selections=num_models
         )
+        st.session_state.parallel_execution_enabled = True
 
     st.session_state.selected_models = selected_models
-    st.info(f"{'Parallel' if num_models > 1 else 'Single'} execution mode")
+
+    # Show parallel execution status
+    if st.session_state.parallel_execution_enabled:
+        st.success(f"⚡ Parallel execution mode with {len(selected_models)} models")
+    else:
+        st.info(f"Single model execution mode")
 
     # API Keys
     with st.expander("🔑 API Keys"):
@@ -709,10 +829,20 @@ with st.sidebar:
         st.metric("Validated", len(st.session_state.validation_results))
         st.metric("Total Cost", f"${st.session_state.total_cost:.3f}")
 
+    # Show model performance if available
+    if st.session_state.model_success_status:
+        st.subheader("🎯 Model Performance")
+        for model, status in st.session_state.model_success_status.items():
+            if status.get('status') == 'success':
+                st.success(f"{model}: {status.get('companies_found', 0)} companies")
+            else:
+                st.error(f"{model}: Failed")
+
     if st.button("🗑️ Clear Session", use_container_width=True):
-        for key in ['search_results', 'validation_results', 'current_criteria']:
+        for key in ['search_results', 'validation_results', 'current_criteria', 'model_results',
+                    'model_execution_times', 'model_success_status']:
             if key in st.session_state:
-                st.session_state[key] = [] if 'results' in key else None
+                st.session_state[key] = [] if 'results' in key else {} if 'model_' in key else None
         st.session_state.total_cost = 0.0
         st.rerun()
 
@@ -1048,7 +1178,7 @@ with tab1:
         st.session_state.current_criteria = built_criteria
         st.success("✅ Criteria confirmed! Go to 'Execute Search' tab.")
 
-# Tab 2: Execute Search
+# Tab 2: Execute Search with PARALLEL EXECUTION
 with tab2:
     st.header("Execute Company Search")
 
@@ -1077,38 +1207,116 @@ with tab2:
 
         st.divider()
 
+        # Show execution mode
+        if st.session_state.parallel_execution_enabled:
+            st.info(
+                f"⚡ **Parallel Execution Mode Active**\n\nUsing {len(st.session_state.selected_models)} models: {', '.join(st.session_state.selected_models)}")
+        else:
+            st.info(f"**Single Model Mode**\n\nUsing: {st.session_state.selected_models[0]}")
+
         target_count = st.slider("Target Companies", 10, 1000, 50, step=10)
 
         if st.button("🚀 Execute Search", type="primary", use_container_width=True):
             progress_bar = st.progress(0)
+            status_placeholder = st.empty()
 
-            with st.spinner(f"Searching with {st.session_state.selected_models[0]}..."):
+            # Clear previous model results
+            st.session_state.model_results = {}
+            st.session_state.model_execution_times = {}
+            st.session_state.model_success_status = {}
+
+            if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
+                # PARALLEL EXECUTION
+                status_placeholder.info(
+                    f"🚀 Executing parallel search with {len(st.session_state.selected_models)} models...")
+
                 try:
-                    agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
-
+                    # Run parallel search
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
+
                     result = loop.run_until_complete(
-                        agent.generate_enhanced_strategy(
+                        execute_parallel_search(
+                            st.session_state.selected_models,
                             st.session_state.current_criteria,
-                            target_count=target_count
+                            target_count
                         )
                     )
                     loop.close()
 
-                    companies = result.get("companies", [])
+                    # Extract results
+                    companies = result.get('companies', [])
+                    metadata = result.get('metadata', {})
+
+                    # Update session state with model stats
+                    st.session_state.model_success_status = metadata.get('model_stats', {})
 
                     if companies:
                         st.session_state.search_results = companies
-                        st.session_state.total_cost += 0.02
-                        st.success(f"✅ Found {len(companies)} companies!")
+                        st.session_state.total_cost += 0.02 * len(st.session_state.selected_models)
+
+                        # Show success with details
+                        status_placeholder.success(
+                            f"✅ Parallel search complete!\n\n"
+                            f"**Total companies found:** {len(companies)}\n"
+                            f"**Successful models:** {len(metadata.get('successful_models', []))}/{len(st.session_state.selected_models)}\n"
+                            f"**Duplicates removed:** {metadata.get('duplicates_removed', 0)}\n"
+                            f"**Execution time:** {metadata.get('execution_time', 0):.2f}s"
+                        )
+
+                        # Show per-model breakdown
+                        if metadata.get('model_stats'):
+                            st.subheader("📊 Model Performance")
+                            model_cols = st.columns(len(st.session_state.selected_models))
+                            for i, (model, stats) in enumerate(metadata['model_stats'].items()):
+                                with model_cols[i % len(model_cols)]:
+                                    if stats['status'] == 'success':
+                                        st.metric(
+                                            label=model.replace('gpt-4.1', 'Model'),
+                                            value=f"{stats['companies_found']} companies",
+                                            delta=f"Target: {stats.get('target', target_count)}"
+                                        )
+                                    else:
+                                        st.error(f"{model}: Failed")
+
                     else:
                         st.warning("No companies found. Try adjusting criteria.")
 
                     progress_bar.progress(1.0)
 
                 except Exception as e:
-                    st.error(f"Search failed: {str(e)}")
+                    st.error(f"Parallel search failed: {str(e)}")
+                    traceback.print_exc()
+
+            else:
+                # SINGLE MODEL EXECUTION (original behavior)
+                with st.spinner(f"Searching with {st.session_state.selected_models[0]}..."):
+                    try:
+                        agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
+
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        result = loop.run_until_complete(
+                            agent.generate_enhanced_strategy(
+                                st.session_state.current_criteria,
+                                target_count=target_count
+                            )
+                        )
+                        loop.close()
+
+                        companies = result.get("companies", [])
+
+                        if companies:
+                            st.session_state.search_results = companies
+                            st.session_state.total_cost += 0.02
+                            st.success(f"✅ Found {len(companies)} companies!")
+                        else:
+                            st.warning("No companies found. Try adjusting criteria.")
+
+                        progress_bar.progress(1.0)
+
+                    except Exception as e:
+                        st.error(f"Search failed: {str(e)}")
 
             progress_bar.empty()
 
@@ -1124,19 +1332,32 @@ with tab2:
                 else:
                     c = company
 
-                results_data.append({
+                row_data = {
                     "Company": c.get('name', 'Unknown'),
                     "Industry": c.get('industry_category', 'Unknown'),
                     "Revenue": c.get('estimated_revenue', 'Unknown'),
                     "Employees": c.get('estimated_employees', 'Unknown'),
                     "ICP Score": c.get('icp_score', 0),
                     "ICP Tier": c.get('icp_tier', 'D')
-                })
+                }
+
+                # Add source model if parallel execution was used
+                if st.session_state.parallel_execution_enabled:
+                    row_data["Source Model"] = c.get('source_model', 'Unknown')
+
+                results_data.append(row_data)
 
             df = pd.DataFrame(results_data)
+
+            # Show summary statistics if parallel execution
+            if st.session_state.parallel_execution_enabled and 'Source Model' in df.columns:
+                st.write("**Results by Model:**")
+                model_summary = df['Source Model'].value_counts()
+                st.bar_chart(model_summary)
+
             st.dataframe(df, use_container_width=True, height=400)
 
-# Tab 3: Validation
+# Tab 3: Validation (unchanged)
 with tab3:
     st.header("Company Validation")
 
@@ -1293,7 +1514,7 @@ with tab3:
             st.divider()
             st.subheader("Validation Results Summary")
 
-            # Summary metrics - check for both cases and variations
+            # Summary metrics
             verified = len([v for v in validated_companies if
                             v.get('validation_status', '').lower() in ['verified', 'verify', 'valid']])
             partial = len(
@@ -1313,116 +1534,7 @@ with tab3:
             with col4:
                 st.metric("Errors", errors)
 
-            # Show sample results based on mode
-            st.write("**Sample Validation Results:**")
-
-            sample_results = []
-            for val in validated_companies[:10]:  # Show up to 10
-                result_row = {
-                    "Company": val.get('company_name', 'Unknown'),
-                    "Status": val.get('validation_status', 'unknown')
-                }
-
-                # Add mode-specific columns with REAL data
-                if "Contact" in validation_mode:
-                    emails = val.get('emails', [])
-                    phones = val.get('phones', [])
-                    names = val.get('names', [])
-
-                    result_row["Email"] = emails[0] if emails else 'Not found'
-                    result_row["Phone"] = phones[0] if phones else 'Not found'
-                    result_row["Contact"] = names[0] if names else 'Not found'
-
-                elif "CSR" in validation_mode:
-                    programs = val.get('csr_programs', [])
-                    certs = val.get('certifications', [])
-                    result_row["CSR Programs"] = ', '.join(programs) if programs else 'None'
-                    result_row["Certifications"] = ', '.join(certs) if certs else 'None'
-                    result_row["Has Foundation"] = 'Yes' if val.get('has_foundation') else 'No'
-
-                elif "Financial" in validation_mode:
-                    result_row["Revenue"] = val.get('revenue_range', 'Not verified')
-                    result_row["Employees"] = val.get('employee_range', 'Not verified')
-                    result_row["Stock Listed"] = 'Yes' if val.get('stock_listed') else 'No'
-                    result_row["Financial Health"] = val.get('financial_health', 'Unknown')
-
-                elif "Full" in validation_mode:
-                    # Show key data from full validation
-                    emails = val.get('emails', [])
-                    result_row["Email"] = emails[0] if emails else 'Not found'
-                    result_row["Revenue"] = val.get('revenue_range', 'Not verified')
-                    programs = val.get('csr_programs', [])
-                    result_row["CSR"] = 'Yes' if programs else 'No'
-                    risks = val.get('risk_signals', [])
-                    result_row["Risk Signals"] = ', '.join(risks) if risks else 'None'
-
-                elif "Simple" in validation_mode:
-                    result_row["Location Verified"] = 'Yes' if val.get('location_verified') else 'No'
-                    result_row["Address"] = val.get('address', 'Not found')
-                    result_row["Phone"] = val.get('phone', 'Not found')
-
-                sample_results.append(result_row)
-
-            if sample_results:
-                sample_df = pd.DataFrame(sample_results)
-                st.dataframe(sample_df, use_container_width=True, hide_index=True)
-
-                # Show detailed validation data in expander
-                with st.expander("📋 Detailed Validation Results", expanded=False):
-                    for val in validated_companies[:5]:
-                        st.write(f"**{val.get('company_name', 'Unknown')}**")
-
-                        # Show validation status
-                        st.write(f"  ✅ Status: {val.get('validation_status', 'unknown')}")
-
-                        # Show mode-specific details
-                        if "Contact" in validation_mode or "Full" in validation_mode:
-                            emails = val.get('emails', [])
-                            if emails:
-                                st.write(f"  📧 Emails: {', '.join(emails[:3])}")
-
-                            phones = val.get('phones', [])
-                            if phones:
-                                st.write(f"  📞 Phones: {', '.join(phones[:3])}")
-
-                            names = val.get('names', [])
-                            if names:
-                                st.write(f"  👤 Contacts: {', '.join(names[:3])}")
-
-                        if "CSR" in validation_mode or "Full" in validation_mode:
-                            programs = val.get('csr_programs', [])
-                            if programs:
-                                st.write(f"  💚 CSR Areas: {', '.join(programs)}")
-
-                            certs = val.get('certifications', [])
-                            if certs:
-                                st.write(f"  🏆 Certifications: {', '.join(certs)}")
-
-                            if val.get('has_foundation'):
-                                st.write(f"  🏛️ Has Foundation: Yes")
-
-                        if "Financial" in validation_mode or "Full" in validation_mode:
-                            if val.get('revenue_range'):
-                                st.write(f"  💰 Revenue: {val.get('revenue_range')}")
-                            if val.get('employee_range'):
-                                st.write(f"  👥 Employees: {val.get('employee_range')}")
-                            if val.get('stock_listed'):
-                                st.write(f"  📈 Stock Listed: Yes")
-
-                        if val.get('risk_signals'):
-                            st.write(f"  ⚠️ Risk Signals: {', '.join(val.get('risk_signals', []))}")
-
-                        st.write(f"  💳 Credits Used: {val.get('credits_used', 0)}")
-                        st.write("")
-
-                # Show credits breakdown
-                st.write("**Credits Usage:**")
-                total_credits_used = sum(v.get('credits_used', 0) for v in validated_companies)
-                st.write(f"Total credits used: {total_credits_used} (${total_credits_used * 0.001:.3f})")
-            else:
-                st.warning("No validation results to display")
-
-# Tab 4: Results & Export
+# Tab 4: Results & Export (with parallel execution tracking)
 with tab4:
     st.header("Results & Export")
 
@@ -1457,6 +1569,10 @@ with tab4:
                 "Validation Status": validation_info.get('validation_status', 'Not Validated'),
                 "Confidence": c.get('confidence', 'Unknown')
             }
+
+            # Add source model if parallel execution was used
+            if st.session_state.parallel_execution_enabled:
+                row["Source Model"] = c.get('source_model', 'Unknown')
 
             # Add validation-specific columns if validated
             if validation_info:
@@ -1525,6 +1641,18 @@ with tab4:
         with col4:
             validation_rate = (validated_count / total_companies * 100) if total_companies > 0 else 0
             st.metric("Validation Rate", f"{validation_rate:.1f}%")
+
+        # Show parallel execution summary if used
+        if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
+            st.subheader("🚀 Parallel Execution Summary")
+
+            exec_cols = st.columns(len(st.session_state.model_success_status))
+            for i, (model, stats) in enumerate(st.session_state.model_success_status.items()):
+                with exec_cols[i]:
+                    if stats['status'] == 'success':
+                        st.success(f"**{model}**\n{stats['companies_found']} companies")
+                    else:
+                        st.error(f"**{model}**\nFailed")
 
         # Filtering options
         st.subheader("🔍 Filter Results")
@@ -1621,6 +1749,17 @@ with tab4:
                         len([d for d in df_data if d.get('Risk Signals')])
                     ]
                 }
+
+                # Add parallel execution stats if available
+                if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
+                    summary_data['Metric'].append('Models Used')
+                    summary_data['Count'].append(len(st.session_state.model_success_status))
+
+                    for model, stats in st.session_state.model_success_status.items():
+                        if stats['status'] == 'success':
+                            summary_data['Metric'].append(f'  {model}')
+                            summary_data['Count'].append(stats['companies_found'])
+
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
@@ -1628,6 +1767,20 @@ with tab4:
                 if st.session_state.validation_results:
                     val_df = pd.DataFrame(st.session_state.validation_results)
                     val_df.to_excel(writer, sheet_name='Validation Details', index=False)
+
+                # Model performance sheet (if parallel execution was used)
+                if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
+                    model_perf_data = []
+                    for model, stats in st.session_state.model_success_status.items():
+                        model_perf_data.append({
+                            'Model': model,
+                            'Status': stats['status'],
+                            'Companies Found': stats.get('companies_found', 0),
+                            'Target': stats.get('target', 0),
+                            'Error': stats.get('error', '')
+                        })
+                    model_perf_df = pd.DataFrame(model_perf_data)
+                    model_perf_df.to_excel(writer, sheet_name='Model Performance', index=False)
 
             excel_data = output.getvalue()
 
@@ -1664,9 +1817,15 @@ with tab4:
                     'total_cost': st.session_state.total_cost,
                     'companies_found': len(st.session_state.search_results),
                     'companies_validated': len(st.session_state.validation_results),
-                    'validation_rate': f"{validation_rate:.1f}%"
+                    'validation_rate': f"{validation_rate:.1f}%",
+                    'parallel_execution': st.session_state.parallel_execution_enabled,
+                    'models_used': st.session_state.selected_models if st.session_state.parallel_execution_enabled else []
                 }
             }
+
+            # Add model performance data if available
+            if st.session_state.model_success_status:
+                export_data['metadata']['model_performance'] = st.session_state.model_success_status
 
             json_str = json.dumps(export_data, indent=2, default=str)
             st.download_button(
@@ -1692,16 +1851,41 @@ with tab4:
     else:
         st.info("No results yet. Configure criteria and run a search to see results here.")
 
-# Tab 5: Help
+# Tab 5: Help (updated with parallel execution info)
 with tab5:
     st.header("Help & Documentation")
 
     st.subheader("📖 Quick Start Guide")
     st.write("""
-    1. **Select a Profile** or create custom criteria in the Search Configuration tab
-    2. **Execute Search** to find companies matching your criteria
-    3. **Validate** companies to verify their information
-    4. **Export** results as CSV or Excel
+    1. **Select Models** in the sidebar (1-5 models for parallel execution)
+    2. **Select a Profile** or create custom criteria in the Search Configuration tab
+    3. **Execute Search** to find companies matching your criteria
+    4. **Validate** companies to verify their information
+    5. **Export** results as CSV, Excel, or JSON
+    """)
+
+    st.subheader("⚡ Parallel Execution")
+    st.write("""
+    **What is Parallel Execution?**
+    - Run searches across multiple GPT-4.1 deployments simultaneously
+    - Get results up to 5x faster when using all 5 models
+    - Automatic deduplication of results
+    - Resilient to individual model failures
+
+    **How to Use:**
+    1. Select 2-5 models in the sidebar
+    2. Configure your search criteria
+    3. Click "Execute Search" - the system will automatically:
+       - Divide the target count among models
+       - Run all searches in parallel
+       - Combine and deduplicate results
+       - Show performance stats for each model
+
+    **Benefits:**
+    - **Speed**: 5x faster with 5 models
+    - **Reliability**: If one model fails, others continue
+    - **Scale**: Handle larger searches efficiently
+    - **Insights**: See which models perform best
     """)
 
     st.subheader("🎯 Profile Descriptions")
@@ -1722,10 +1906,30 @@ with tab5:
         - **Tier C:** Potential partners meeting basic criteria
         """)
 
-# Footer
+    st.subheader("🔧 Troubleshooting")
+    st.write("""
+    **Parallel Execution Issues:**
+    - If some models fail, the search will still complete with successful models
+    - Check the model performance section for details on failures
+    - Reduce the number of models if consistently seeing failures
+
+    **Performance Tips:**
+    - Use 3-5 models for optimal performance
+    - For small searches (<20 companies), single model may be sufficient
+    - For large searches (100+ companies), parallel execution is recommended
+    """)
+
+# Footer with enhanced stats
 st.divider()
-st.caption(
-    f"Session Cost: ${st.session_state.total_cost:.3f} | "
-    f"Companies Found: {len(st.session_state.search_results)} | "
-    f"Validated: {len(st.session_state.validation_results)}"
-)
+footer_cols = st.columns(4)
+with footer_cols[0]:
+    st.caption(f"Session Cost: ${st.session_state.total_cost:.3f}")
+with footer_cols[1]:
+    st.caption(f"Companies Found: {len(st.session_state.search_results)}")
+with footer_cols[2]:
+    st.caption(f"Validated: {len(st.session_state.validation_results)}")
+with footer_cols[3]:
+    if st.session_state.parallel_execution_enabled:
+        st.caption(f"⚡ Parallel Mode: {len(st.session_state.selected_models)} models")
+    else:
+        st.caption("Single Model Mode")
