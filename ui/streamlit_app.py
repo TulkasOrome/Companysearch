@@ -1,7 +1,7 @@
 # streamlit_app.py
 """
-Enhanced Streamlit App with Parallel Model Execution
-Updated version with parallel GPT-4.1 deployment support
+Enhanced Streamlit App with Parallel Model Execution and Improved Token Handling
+Updated version with batch execution and token limit management
 """
 
 import streamlit as st
@@ -344,251 +344,244 @@ class ICPManager:
 
 
 # ============================================================================
-# ENHANCED SEARCH AGENT
+# IMPORT OR DEFINE THE ENHANCED SEARCH AGENT
 # ============================================================================
 
-class EnhancedSearchStrategistAgent:
-    """Enhanced agent with comprehensive search capabilities"""
+# Try to import the enhanced agent
+try:
+    from agents.search_strategist_agent import EnhancedSearchStrategistAgent
+except ImportError:
+    # If import fails, use the local definition
+    class EnhancedSearchStrategistAgent:
+        """Enhanced agent with comprehensive search capabilities"""
 
-    def __init__(self, deployment_name: str = "gpt-4.1"):
-        self.deployment_name = deployment_name
-        self.client = None
-        self.initialized = False
+        def __init__(self, deployment_name: str = "gpt-4.1"):
+            self.deployment_name = deployment_name
+            self.client = None
+            self.initialized = False
 
-    def _init_llm(self):
-        """Initialize the LLM with Azure OpenAI"""
-        if self.initialized:
-            return
+        def _init_llm(self):
+            """Initialize the LLM with Azure OpenAI"""
+            if self.initialized:
+                return
 
-        try:
-            from openai import AzureOpenAI
+            try:
+                from openai import AzureOpenAI
 
-            api_key = os.getenv("AZURE_OPENAI_KEY",
-                                "CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1")
-            api_version = os.getenv("AZURE_API_VERSION", "2024-02-01")
-            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://amex-openai-2025.openai.azure.com/")
+                api_key = os.getenv("AZURE_OPENAI_KEY",
+                                    "CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1")
+                api_version = os.getenv("AZURE_API_VERSION", "2024-02-01")
+                azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://amex-openai-2025.openai.azure.com/")
 
-            self.client = AzureOpenAI(
-                api_key=api_key,
-                api_version=api_version,
-                azure_endpoint=azure_endpoint
-            )
+                self.client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version=api_version,
+                    azure_endpoint=azure_endpoint
+                )
 
-            self.initialized = True
-            print(f"Successfully initialized Azure OpenAI client with deployment: {self.deployment_name}")
+                self.initialized = True
+                print(f"Successfully initialized Azure OpenAI client with deployment: {self.deployment_name}")
 
-        except Exception as e:
-            print(f"Error initializing Azure OpenAI: {str(e)}")
-            raise
+            except Exception as e:
+                print(f"Error initializing Azure OpenAI: {str(e)}")
+                raise
 
-    async def generate_enhanced_strategy(
-            self,
-            criteria: SearchCriteria,
-            target_count: int = 100
-    ) -> Dict[str, Any]:
-        """Generate search strategy with enhanced criteria"""
-        if not self.client:
-            self._init_llm()
+        async def generate_enhanced_strategy(
+                self,
+                criteria: SearchCriteria,
+                target_count: int = 100
+        ) -> Dict[str, Any]:
+            """Generate search strategy with enhanced criteria"""
+            if not self.client:
+                self._init_llm()
 
-        prompt = self._build_enhanced_prompt(criteria, target_count)
+            prompt = self._build_enhanced_prompt(criteria, target_count)
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.deployment_name,
-                messages=[
-                    {"role": "system", "content": "You are a company finder. Respond with valid JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=4000,
-                response_format={"type": "json_object"}
-            )
+            try:
+                # ENHANCED: Increased token limit
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    messages=[
+                        {"role": "system", "content": "You are a company finder. Respond with valid JSON only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=16384,  # Increased from 4000
+                    response_format={"type": "json_object"}
+                )
 
-            content = response.choices[0].message.content
-            result = json.loads(content)
+                content = response.choices[0].message.content
+                result = json.loads(content)
 
-            enhanced_companies = []
-            for company_data in result.get("companies", []):
-                try:
-                    company_data = self._ensure_company_fields(company_data)
-                    # Add source model tracking
-                    company_data['source_model'] = self.deployment_name
-                    company = EnhancedCompanyEntry(**company_data)
-                    company = self._calculate_icp_score(company, criteria)
-                    enhanced_companies.append(company)
-                except Exception as e:
-                    print(f"Error processing company: {e}")
-                    continue
+                enhanced_companies = []
+                for company_data in result.get("companies", []):
+                    try:
+                        company_data = self._ensure_company_fields(company_data)
+                        # Add source model tracking
+                        company_data['source_model'] = self.deployment_name
+                        company = EnhancedCompanyEntry(**company_data)
+                        company = self._calculate_icp_score(company, criteria)
+                        enhanced_companies.append(company)
+                    except Exception as e:
+                        print(f"Error processing company: {e}")
+                        continue
 
-            return {
-                "companies": enhanced_companies,
-                "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
-                "metadata": {
-                    "total_found": len(enhanced_companies),
-                    "timestamp": datetime.now().isoformat(),
-                    "deployment": self.deployment_name
+                return {
+                    "companies": enhanced_companies,
+                    "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
+                    "metadata": {
+                        "total_found": len(enhanced_companies),
+                        "timestamp": datetime.now().isoformat(),
+                        "deployment": self.deployment_name,
+                        "batch_execution": target_count > 20  # Track if batch would be used
+                    }
                 }
+
+            except Exception as e:
+                print(f"Search error in {self.deployment_name}: {e}")
+                return {"companies": [], "error": str(e), "deployment": self.deployment_name}
+
+        def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
+            """Ensure all required fields exist in company data"""
+            defaults = {
+                "name": "Unknown Company",
+                "confidence": "low",
+                "operates_in_country": True,
+                "business_type": "Unknown",
+                "industry_category": "Unknown",
+                "reasoning": "No reasoning provided",
+                "sub_industry": None,
+                "headquarters": None,
+                "office_locations": [],
+                "service_areas": [],
+                "estimated_revenue": None,
+                "revenue_currency": "USD",
+                "estimated_employees": None,
+                "employees_by_location": None,
+                "company_size": "unknown",
+                "giving_history": [],
+                "financial_health": None,
+                "csr_programs": [],
+                "csr_focus_areas": [],
+                "certifications": [],
+                "esg_score": None,
+                "esg_maturity": None,
+                "community_involvement": [],
+                "recent_events": [],
+                "leadership_changes": [],
+                "growth_signals": [],
+                "icp_tier": None,
+                "icp_score": None,
+                "matched_criteria": [],
+                "missing_criteria": [],
+                "data_freshness": None,
+                "data_sources": [],
+                "validation_notes": None,
+                "source_model": None
             }
 
-        except Exception as e:
-            print(f"Search error in {self.deployment_name}: {e}")
-            return {"companies": [], "error": str(e), "deployment": self.deployment_name}
+            for key, default_value in defaults.items():
+                if key not in company_data:
+                    company_data[key] = default_value
 
-    def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure all required fields exist in company data"""
-        defaults = {
-            "name": "Unknown Company",
-            "confidence": "low",
-            "operates_in_country": True,
-            "business_type": "Unknown",
-            "industry_category": "Unknown",
-            "reasoning": "No reasoning provided",
-            "sub_industry": None,
-            "headquarters": None,
-            "office_locations": [],
-            "service_areas": [],
-            "estimated_revenue": None,
-            "revenue_currency": "USD",
-            "estimated_employees": None,
-            "employees_by_location": None,
-            "company_size": "unknown",
-            "giving_history": [],
-            "financial_health": None,
-            "csr_programs": [],
-            "csr_focus_areas": [],
-            "certifications": [],
-            "esg_score": None,
-            "esg_maturity": None,
-            "community_involvement": [],
-            "recent_events": [],
-            "leadership_changes": [],
-            "growth_signals": [],
-            "icp_tier": None,
-            "icp_score": None,
-            "matched_criteria": [],
-            "missing_criteria": [],
-            "data_freshness": None,
-            "data_sources": [],
-            "validation_notes": None,
-            "source_model": None
-        }
+            return company_data
 
-        for key, default_value in defaults.items():
-            if key not in company_data:
-                company_data[key] = default_value
+        def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
+            """Build comprehensive prompt from criteria - OPTIMIZED FOR TOKENS"""
+            prompt_parts = []
 
-        return company_data
+            # More concise prompt to reduce token usage
+            prompt_parts.append(f"Find {target_count} companies matching:")
 
-    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
-        """Build comprehensive prompt from criteria"""
-        prompt_parts = []
+            # Location - concise
+            if criteria.location.countries or criteria.location.cities:
+                locations = []
+                if criteria.location.countries:
+                    locations.append(f"Countries: {', '.join(criteria.location.countries[:3])}")
+                if criteria.location.cities:
+                    locations.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
+                prompt_parts.append("LOCATION: " + "; ".join(locations))
 
-        prompt_parts.append(f"Find {target_count} companies with these requirements:")
-        prompt_parts.append("")
+            # Financial - concise
+            if criteria.financial.revenue_min or criteria.financial.revenue_max:
+                if criteria.financial.revenue_min and criteria.financial.revenue_max:
+                    prompt_parts.append(
+                        f"REVENUE: ${int(criteria.financial.revenue_min / 1e6)}-{int(criteria.financial.revenue_max / 1e6)}M {criteria.financial.revenue_currency}")
+                elif criteria.financial.revenue_min:
+                    prompt_parts.append(
+                        f"REVENUE: >${int(criteria.financial.revenue_min / 1e6)}M {criteria.financial.revenue_currency}")
 
-        # Location
-        location_specs = []
-        if criteria.location.countries:
-            location_specs.append(f"Country: {', '.join(criteria.location.countries)}")
-        if criteria.location.states:
-            location_specs.append(f"State: {', '.join(criteria.location.states)}")
-        if criteria.location.cities:
-            location_specs.append(f"City: {', '.join(criteria.location.cities)}")
+            # Employees - concise
+            if criteria.organizational.employee_count_min:
+                prompt_parts.append(f"EMPLOYEES: {criteria.organizational.employee_count_min}+")
 
-        if location_specs:
-            prompt_parts.append("LOCATION:")
-            prompt_parts.extend(location_specs)
-            prompt_parts.append("")
+            # Industries - limit to top 3
+            if criteria.industries:
+                ind_names = [ind['name'] for ind in criteria.industries[:3]]
+                prompt_parts.append(f"INDUSTRIES: {', '.join(ind_names)}")
 
-        # Financial
-        if criteria.financial.revenue_min or criteria.financial.revenue_max:
-            prompt_parts.append("REVENUE:")
-            if criteria.financial.revenue_min and criteria.financial.revenue_max:
-                min_m = int(criteria.financial.revenue_min / 1_000_000)
-                max_m = int(criteria.financial.revenue_max / 1_000_000)
-                prompt_parts.append(f"Between {min_m} and {max_m} million {criteria.financial.revenue_currency}")
-            elif criteria.financial.revenue_min:
-                min_m = int(criteria.financial.revenue_min / 1_000_000)
-                prompt_parts.append(f"Above {min_m} million {criteria.financial.revenue_currency}")
-            prompt_parts.append("")
+            # Business types
+            if criteria.business_types:
+                prompt_parts.append(f"TYPES: {', '.join(criteria.business_types[:3])}")
 
-        # Industries
-        if criteria.industries:
-            prompt_parts.append("INDUSTRIES:")
-            for ind in criteria.industries[:5]:
-                prompt_parts.append(f"- {ind['name']}")
-            prompt_parts.append("")
+            # CSR - concise
+            if criteria.behavioral.csr_focus_areas:
+                prompt_parts.append(f"CSR: {', '.join(criteria.behavioral.csr_focus_areas[:3])}")
 
-        # Business types
-        if criteria.business_types:
-            prompt_parts.append(f"BUSINESS TYPES: {', '.join(criteria.business_types)}")
-            prompt_parts.append("")
+            # JSON format - minimal fields to reduce response size
+            prompt_parts.append("\nReturn JSON:")
+            prompt_parts.append("""{"companies":[{
+"name":"Company Name",
+"confidence":"high",
+"operates_in_country":true,
+"business_type":"B2B",
+"industry_category":"Industry",
+"reasoning":"Brief reason",
+"estimated_revenue":"50-100M",
+"estimated_employees":"100-500",
+"headquarters":{"city":"City"},
+"csr_focus_areas":[]
+}]}""")
 
-        # JSON format instruction
-        prompt_parts.append("Return companies as JSON in this exact format:")
-        prompt_parts.append("""
-{
-  "companies": [
-    {
-      "name": "Example Company Pty Ltd",
-      "confidence": "high",
-      "operates_in_country": true,
-      "business_type": "B2B",
-      "industry_category": "Manufacturing",
-      "reasoning": "Australian manufacturing company with 200 employees",
-      "estimated_revenue": "50-100M",
-      "estimated_employees": "100-500",
-      "company_size": "medium",
-      "headquarters": {"city": "Melbourne"},
-      "office_locations": ["Melbourne"],
-      "csr_programs": [],
-      "csr_focus_areas": [],
-      "certifications": [],
-      "recent_events": [],
-      "data_sources": ["public records"]
-    }
-  ]
-}""")
+            return "\n".join(prompt_parts)
 
-        return "\n".join(prompt_parts)
+        def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
+            """Calculate ICP score and tier for a company"""
+            score = 0
+            max_score = 100
 
-    def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
-        """Calculate ICP score and tier for a company"""
-        score = 0
-        max_score = 100
+            # Simple scoring logic
+            if company.operates_in_country:
+                score += 20
+            if company.estimated_revenue:
+                score += 20
+            if company.estimated_employees:
+                score += 15
+            if company.business_type in criteria.business_types:
+                score += 15
+            if company.csr_programs or company.csr_focus_areas:
+                score += 15
+            if company.confidence in ["high", "absolute"]:
+                score += 15
 
-        # Simple scoring logic
-        if company.operates_in_country:
-            score += 20
-        if company.estimated_revenue:
-            score += 20
-        if company.estimated_employees:
-            score += 15
-        if company.business_type in criteria.business_types:
-            score += 15
-        if company.csr_programs or company.csr_focus_areas:
-            score += 15
-        if company.confidence in ["high", "absolute"]:
-            score += 15
+            # Determine tier
+            if score >= 80:
+                tier = "A"
+            elif score >= 60:
+                tier = "B"
+            elif score >= 40:
+                tier = "C"
+            else:
+                tier = "D"
 
-        # Determine tier
-        if score >= 80:
-            tier = "A"
-        elif score >= 60:
-            tier = "B"
-        elif score >= 40:
-            tier = "C"
-        else:
-            tier = "D"
+            company.icp_score = score
+            company.icp_tier = tier
 
-        company.icp_score = score
-        company.icp_tier = tier
-
-        return company
+            return company
 
 
 # ============================================================================
-# PARALLEL EXECUTION HELPER FUNCTIONS
+# ENHANCED PARALLEL EXECUTION HELPER FUNCTIONS
 # ============================================================================
 
 async def execute_parallel_search(
@@ -596,11 +589,17 @@ async def execute_parallel_search(
         criteria: SearchCriteria,
         target_count: int
 ) -> Dict[str, Any]:
-    """Execute search across multiple models in parallel"""
+    """Execute search across multiple models in parallel - ENHANCED WITH BATCH HANDLING"""
 
-    # Calculate per-model target
-    per_model_count = max(10, target_count // len(models))
-    remainder = target_count % len(models)
+    # Calculate per-model target with better distribution
+    # For large counts, each model gets a reasonable batch
+    if target_count > 100:
+        # For large searches, limit each model to reasonable batch sizes
+        per_model_count = min(50, target_count // len(models))
+        remainder = target_count - (per_model_count * len(models))
+    else:
+        per_model_count = max(10, target_count // len(models))
+        remainder = target_count % len(models)
 
     # Create tasks for each model
     tasks = []
@@ -608,7 +607,7 @@ async def execute_parallel_search(
 
     for i, model in enumerate(models):
         # Distribute remainder across first models
-        model_target = per_model_count + (1 if i < remainder else 0)
+        model_target = per_model_count + (remainder // len(models)) + (1 if i < (remainder % len(models)) else 0)
         model_targets[model] = model_target
 
         # Create agent and task
@@ -616,16 +615,21 @@ async def execute_parallel_search(
         task = agent.generate_enhanced_strategy(criteria, target_count=model_target)
         tasks.append(task)
 
-    # Execute all tasks in parallel
+    # Execute all tasks in parallel with better error handling
     start_time = time.time()
+
+    # Use gather with return_exceptions to handle failures gracefully
     results = await asyncio.gather(*tasks, return_exceptions=True)
+
     execution_time = time.time() - start_time
 
-    # Process results
+    # Process results with enhanced error handling
     all_companies = []
     model_stats = {}
     successful_models = []
     failed_models = []
+    total_attempts = len(models)
+    retry_models = []
 
     for model, result in zip(models, results):
         if isinstance(result, Exception):
@@ -636,6 +640,8 @@ async def execute_parallel_search(
                 'error': str(result),
                 'companies_found': 0
             }
+            retry_models.append(model)
+
         elif isinstance(result, dict):
             if 'error' in result:
                 # Model returned error
@@ -645,6 +651,7 @@ async def execute_parallel_search(
                     'error': result.get('error'),
                     'companies_found': 0
                 }
+                retry_models.append(model)
             else:
                 # Success
                 companies = result.get('companies', [])
@@ -653,21 +660,66 @@ async def execute_parallel_search(
                 model_stats[model] = {
                     'status': 'success',
                     'companies_found': len(companies),
-                    'target': model_targets[model]
+                    'target': model_targets[model],
+                    'batch_execution': result.get('metadata', {}).get('batch_execution', False)
                 }
 
-    # Deduplicate companies by name
+    # Retry failed models with smaller batch sizes if needed
+    if retry_models and len(all_companies) < target_count * 0.5:
+        print(f"Retrying {len(retry_models)} failed models with smaller batches...")
+
+        retry_tasks = []
+        for model in retry_models[:2]:  # Limit retries to avoid long delays
+            agent = EnhancedSearchStrategistAgent(deployment_name=model)
+            # Try with much smaller batch
+            retry_task = agent.generate_enhanced_strategy(criteria, target_count=10)
+            retry_tasks.append((model, retry_task))
+
+        if retry_tasks:
+            retry_results = await asyncio.gather(*[task for _, task in retry_tasks], return_exceptions=True)
+
+            for (model, _), retry_result in zip(retry_tasks, retry_results):
+                if not isinstance(retry_result, Exception) and isinstance(retry_result, dict):
+                    if 'companies' in retry_result and retry_result['companies']:
+                        companies = retry_result['companies']
+                        all_companies.extend(companies)
+
+                        # Update model stats
+                        if model in failed_models:
+                            failed_models.remove(model)
+                            successful_models.append(model)
+
+                        model_stats[model] = {
+                            'status': 'success (retry)',
+                            'companies_found': len(companies),
+                            'target': 10,
+                            'batch_execution': True
+                        }
+
+    # Deduplicate companies by name with better logic
     seen_names = set()
+    seen_name_variations = {}  # Track variations of company names
     unique_companies = []
     duplicates_removed = 0
 
     for company in all_companies:
         company_name = company.name.lower().strip()
-        if company_name not in seen_names:
-            seen_names.add(company_name)
+
+        # Remove common suffixes for deduplication
+        name_core = company_name
+        for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp', 'llc', 'plc']:
+            name_core = name_core.replace(suffix, '').strip()
+
+        if name_core not in seen_names and company_name not in seen_name_variations.values():
+            seen_names.add(name_core)
+            seen_name_variations[name_core] = company_name
             unique_companies.append(company)
         else:
             duplicates_removed += 1
+
+    # Calculate success metrics
+    success_rate = (len(successful_models) / total_attempts * 100) if total_attempts > 0 else 0
+    companies_per_second = len(all_companies) / execution_time if execution_time > 0 else 0
 
     return {
         'companies': unique_companies,
@@ -681,6 +733,9 @@ async def execute_parallel_search(
             'total_companies_after_dedup': len(unique_companies),
             'duplicates_removed': duplicates_removed,
             'execution_time': execution_time,
+            'success_rate': success_rate,
+            'companies_per_second': companies_per_second,
+            'batch_execution_used': any(stats.get('batch_execution', False) for stats in model_stats.values()),
             'timestamp': datetime.now().isoformat()
         }
     }
@@ -729,7 +784,7 @@ except ImportError:
     print("Warning: Serper validation not available, using mock data")
 
 # ============================================================================
-# STREAMLIT APP - WITH PARALLEL EXECUTION
+# STREAMLIT APP - WITH PARALLEL EXECUTION AND ENHANCED TOKEN HANDLING
 # ============================================================================
 
 # Page config
@@ -770,7 +825,7 @@ icp_manager = ICPManager()
 
 # Title
 st.title("🔍 Company Search & Validation Platform")
-st.markdown("AI-powered company discovery with advanced validation modes")
+st.markdown("AI-powered company discovery with advanced validation modes and enhanced token handling")
 
 # Sidebar configuration
 with st.sidebar:
@@ -835,6 +890,8 @@ with st.sidebar:
         for model, status in st.session_state.model_success_status.items():
             if status.get('status') == 'success':
                 st.success(f"{model}: {status.get('companies_found', 0)} companies")
+            elif status.get('status') == 'success (retry)':
+                st.warning(f"{model}: {status.get('companies_found', 0)} companies (retry)")
             else:
                 st.error(f"{model}: Failed")
 
@@ -1178,7 +1235,7 @@ with tab1:
         st.session_state.current_criteria = built_criteria
         st.success("✅ Criteria confirmed! Go to 'Execute Search' tab.")
 
-# Tab 2: Execute Search with PARALLEL EXECUTION
+# Tab 2: Execute Search with ENHANCED TOKEN HANDLING
 with tab2:
     st.header("Execute Company Search")
 
@@ -1215,6 +1272,11 @@ with tab2:
             st.info(f"**Single Model Mode**\n\nUsing: {st.session_state.selected_models[0]}")
 
         target_count = st.slider("Target Companies", 10, 1000, 50, step=10)
+
+        # Show batch execution notice for large counts
+        if target_count > 20:
+            st.info(
+                f"📦 Large search detected ({target_count} companies). Will use batch execution for optimal performance.")
 
         if st.button("🚀 Execute Search", type="primary", use_container_width=True):
             progress_bar = st.progress(0)
@@ -1256,12 +1318,14 @@ with tab2:
                         st.session_state.total_cost += 0.02 * len(st.session_state.selected_models)
 
                         # Show success with details
+                        batch_info = " (with batch execution)" if metadata.get('batch_execution_used', False) else ""
                         status_placeholder.success(
-                            f"✅ Parallel search complete!\n\n"
+                            f"✅ Parallel search complete{batch_info}!\n\n"
                             f"**Total companies found:** {len(companies)}\n"
                             f"**Successful models:** {len(metadata.get('successful_models', []))}/{len(st.session_state.selected_models)}\n"
                             f"**Duplicates removed:** {metadata.get('duplicates_removed', 0)}\n"
-                            f"**Execution time:** {metadata.get('execution_time', 0):.2f}s"
+                            f"**Execution time:** {metadata.get('execution_time', 0):.2f}s\n"
+                            f"**Success rate:** {metadata.get('success_rate', 0):.1f}%"
                         )
 
                         # Show per-model breakdown
@@ -1270,9 +1334,10 @@ with tab2:
                             model_cols = st.columns(len(st.session_state.selected_models))
                             for i, (model, stats) in enumerate(metadata['model_stats'].items()):
                                 with model_cols[i % len(model_cols)]:
-                                    if stats['status'] == 'success':
+                                    if 'success' in stats['status']:
+                                        batch_note = " 📦" if stats.get('batch_execution', False) else ""
                                         st.metric(
-                                            label=model.replace('gpt-4.1', 'Model'),
+                                            label=model.replace('gpt-4.1', 'Model') + batch_note,
                                             value=f"{stats['companies_found']} companies",
                                             delta=f"Target: {stats.get('target', target_count)}"
                                         )
@@ -1289,7 +1354,7 @@ with tab2:
                     traceback.print_exc()
 
             else:
-                # SINGLE MODEL EXECUTION (original behavior)
+                # SINGLE MODEL EXECUTION (updated with enhanced token handling)
                 with st.spinner(f"Searching with {st.session_state.selected_models[0]}..."):
                     try:
                         agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
@@ -1306,10 +1371,18 @@ with tab2:
 
                         companies = result.get("companies", [])
 
+                        # Check if batch execution was used
+                        batch_used = result.get("metadata", {}).get("batch_execution", False)
+
                         if companies:
                             st.session_state.search_results = companies
                             st.session_state.total_cost += 0.02
-                            st.success(f"✅ Found {len(companies)} companies!")
+
+                            # Show success with batch info if applicable
+                            if batch_used:
+                                st.success(f"✅ Found {len(companies)} companies using batch execution!")
+                            else:
+                                st.success(f"✅ Found {len(companies)} companies!")
                         else:
                             st.warning("No companies found. Try adjusting criteria.")
 
@@ -1317,6 +1390,34 @@ with tab2:
 
                     except Exception as e:
                         st.error(f"Search failed: {str(e)}")
+                        # Try with smaller batch as fallback
+                        try:
+                            st.info("Retrying with smaller batch size...")
+                            agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
+
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            result = loop.run_until_complete(
+                                agent.generate_enhanced_strategy(
+                                    st.session_state.current_criteria,
+                                    target_count=min(10, target_count)
+                                )
+                            )
+                            loop.close()
+
+                            companies = result.get("companies", [])
+                            if companies:
+                                st.session_state.search_results = companies
+                                st.session_state.total_cost += 0.02
+                                st.warning(
+                                    f"⚠️ Partial success: Found {len(companies)} companies (reduced from {target_count})")
+                            else:
+                                st.error("Search failed even with reduced batch size.")
+
+                        except Exception as retry_error:
+                            st.error(f"Retry also failed: {str(retry_error)}")
+
+                        progress_bar.progress(1.0)
 
             progress_bar.empty()
 
@@ -1349,15 +1450,9 @@ with tab2:
 
             df = pd.DataFrame(results_data)
 
-            # Show summary statistics if parallel execution
-            if st.session_state.parallel_execution_enabled and 'Source Model' in df.columns:
-                st.write("**Results by Model:**")
-                model_summary = df['Source Model'].value_counts()
-                st.bar_chart(model_summary)
-
             st.dataframe(df, use_container_width=True, height=400)
 
-# Tab 3: Validation (unchanged)
+# Tab 3: Validation (with results display)
 with tab3:
     st.header("Company Validation")
 
@@ -1365,6 +1460,11 @@ with tab3:
         st.info("No companies to validate. Run a search first.")
     else:
         st.write(f"**{len(st.session_state.search_results)} companies** ready for validation")
+
+        # Show existing validation results if available
+        if st.session_state.validation_results:
+            st.info(
+                f"ℹ️ {len(st.session_state.validation_results)} companies already validated. You can validate more or view existing results below.")
 
         # Validation mode selection
         st.subheader("🎯 Validation Mode")
@@ -1534,402 +1634,224 @@ with tab3:
             with col4:
                 st.metric("Errors", errors)
 
-# Tab 4: Results & Export (with parallel execution tracking)
-with tab4:
-    st.header("Results & Export")
+            # Display detailed validation results
+            st.divider()
+            st.subheader("📋 Detailed Validation Results")
 
-    if st.session_state.search_results or st.session_state.validation_results:
-        st.subheader("Combined Results")
+            # Create a DataFrame for display
+            validation_display_data = []
+            for val_result in validated_companies:
+                display_row = {
+                    "Company": val_result.get('company_name', 'Unknown'),
+                    "Status": val_result.get('validation_status', 'unknown'),
+                    "Mode": val_result.get('mode', validation_mode),
+                    "Credits Used": val_result.get('credits_used', 0)
+                }
 
-        # Create comprehensive DataFrame with validation data
-        df_data = []
+                # Add mode-specific data based on validation type
+                if "Contact" in validation_mode:
+                    # Contact extraction results
+                    emails = val_result.get('emails', [])
+                    phones = val_result.get('phones', [])
+                    names = val_result.get('names', [])
+                    display_row["Emails Found"] = len(emails)
+                    display_row["First Email"] = emails[0] if emails else ""
+                    display_row["Phones Found"] = len(phones)
+                    display_row["First Phone"] = phones[0] if phones else ""
+                    display_row["Contacts Found"] = len(names)
+                    display_row["First Contact"] = names[0] if names else ""
 
-        # Create mapping of validation results
-        validation_map = {v.get('company_name'): v for v in st.session_state.validation_results}
+                elif "CSR" in validation_mode:
+                    # CSR verification results
+                    csr_programs = val_result.get('csr_programs', [])
+                    certifications = val_result.get('certifications', [])
+                    display_row["CSR Programs"] = ', '.join(csr_programs) if csr_programs else "None found"
+                    display_row["Certifications"] = ', '.join(certifications) if certifications else "None found"
+                    display_row["Has Foundation"] = "Yes" if val_result.get('has_foundation') else "No"
 
-        for company in st.session_state.search_results:
-            if hasattr(company, 'dict'):
-                c = company.dict()
-            elif isinstance(company, dict):
-                c = company
-            else:
-                c = {'name': str(company)}
+                elif "Financial" in validation_mode:
+                    # Financial verification results
+                    display_row["Revenue Range"] = val_result.get('revenue_range', 'Not found')
+                    display_row["Employee Range"] = val_result.get('employee_range', 'Not found')
+                    display_row["Stock Listed"] = "Yes" if val_result.get('stock_listed') else "No"
+                    risk_signals = val_result.get('risk_signals', [])
+                    display_row["Risk Signals"] = ', '.join(risk_signals) if risk_signals else "None"
 
-            company_name = c.get('name', 'Unknown')
-            validation_info = validation_map.get(company_name, {})
+                elif "Simple" in validation_mode:
+                    # Simple check results
+                    display_row["Location Verified"] = "Yes" if val_result.get('location_verified') else "No"
+                    display_row["Address"] = val_result.get('address', 'Not found')
+                    display_row["Phone"] = val_result.get('phone', 'Not found')
 
-            # Build base row
-            row = {
-                "Company": company_name,
-                "Industry": c.get('industry_category', 'Unknown'),
-                "Revenue": c.get('estimated_revenue', 'Unknown'),
-                "Employees": c.get('estimated_employees', 'Unknown'),
-                "ICP Score": f"{c.get('icp_score', 0):.0f}" if c.get('icp_score') else "N/A",
-                "ICP Tier": c.get('icp_tier', 'Untiered'),
-                "Validation Status": validation_info.get('validation_status', 'Not Validated'),
-                "Confidence": c.get('confidence', 'Unknown')
-            }
+                elif "Full" in validation_mode:
+                    # Full validation results - combine all
+                    emails = val_result.get('emails', [])
+                    display_row["Email"] = emails[0] if emails else "Not found"
+                    display_row["Phone"] = val_result.get('phones', [None])[0] or val_result.get('phone', 'Not found')
+                    display_row["Revenue"] = val_result.get('revenue_range', 'Not found')
+                    display_row["Employees"] = val_result.get('employee_range', 'Not found')
+                    csr_programs = val_result.get('csr_programs', [])
+                    display_row["CSR"] = "Yes" if csr_programs else "No"
+                    risk_signals = val_result.get('risk_signals', [])
+                    display_row["Risks"] = len(risk_signals)
 
-            # Add source model if parallel execution was used
-            if st.session_state.parallel_execution_enabled:
-                row["Source Model"] = c.get('source_model', 'Unknown')
+                # Add error message if validation failed
+                if val_result.get('error'):
+                    display_row["Error"] = val_result.get('error', '')
 
-            # Add validation-specific columns if validated
-            if validation_info:
-                # Add contact info if available
-                emails = validation_info.get('emails', [])
-                if emails:
-                    row['Email'] = emails[0] if emails else ''
-                    row['Additional Emails'] = ', '.join(emails[1:3]) if len(emails) > 1 else ''
+                validation_display_data.append(display_row)
 
-                phones = validation_info.get('phones', [])
-                if phones:
-                    row['Phone'] = phones[0] if phones else ''
+            # Display the results table
+            if validation_display_data:
+                val_df = pd.DataFrame(validation_display_data)
 
-                names = validation_info.get('names', [])
-                if names:
-                    row['Contact Names'] = ', '.join(names[:3])
 
-                # Add financial validation if available
-                if validation_info.get('revenue_range'):
-                    row['Verified Revenue'] = validation_info.get('revenue_range', '')
-                if validation_info.get('employee_range'):
-                    row['Verified Employees'] = validation_info.get('employee_range', '')
-                if 'stock_listed' in validation_info:
-                    row['Stock Listed'] = 'Yes' if validation_info.get('stock_listed') else 'No'
-
-                # Add CSR validation if available
-                csr_programs = validation_info.get('csr_programs', [])
-                if csr_programs:
-                    row['CSR Programs'] = ', '.join(csr_programs)
-
-                certifications = validation_info.get('certifications', [])
-                if certifications:
-                    row['Certifications'] = ', '.join(certifications)
-
-                if 'has_foundation' in validation_info:
-                    row['Has Foundation'] = 'Yes' if validation_info.get('has_foundation') else 'No'
-
-                # Add location validation if available
-                if 'location_verified' in validation_info:
-                    row['Location Verified'] = 'Yes' if validation_info.get('location_verified') else 'No'
-                if validation_info.get('address'):
-                    row['Verified Address'] = validation_info.get('address', '')
-
-                # Add risk signals if available
-                risk_signals = validation_info.get('risk_signals', [])
-                if risk_signals:
-                    row['Risk Signals'] = ', '.join(risk_signals)
-
-            df_data.append(row)
-
-        df = pd.DataFrame(df_data)
-
-        # Summary statistics
-        col1, col2, col3, col4 = st.columns(4)
-
-        total_companies = len(df_data)
-        validated_count = len([d for d in df_data if d['Validation Status'] != 'Not Validated'])
-        verified_count = len([d for d in df_data if d['Validation Status'] == 'verified'])
-
-        with col1:
-            st.metric("Total Companies", total_companies)
-        with col2:
-            st.metric("Validated", validated_count)
-        with col3:
-            st.metric("Verified", verified_count)
-        with col4:
-            validation_rate = (validated_count / total_companies * 100) if total_companies > 0 else 0
-            st.metric("Validation Rate", f"{validation_rate:.1f}%")
-
-        # Show parallel execution summary if used
-        if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
-            st.subheader("🚀 Parallel Execution Summary")
-
-            exec_cols = st.columns(len(st.session_state.model_success_status))
-            for i, (model, stats) in enumerate(st.session_state.model_success_status.items()):
-                with exec_cols[i]:
-                    if stats['status'] == 'success':
-                        st.success(f"**{model}**\n{stats['companies_found']} companies")
+                # Color code the status column
+                def color_status(val):
+                    if val.lower() in ['verified', 'verify', 'valid']:
+                        return 'background-color: #90EE90'  # Light green
+                    elif val.lower() in ['partial', 'partially']:
+                        return 'background-color: #FFE4B5'  # Light orange
+                    elif val.lower() in ['error', 'failed']:
+                        return 'background-color: #FFB6C1'  # Light red
                     else:
-                        st.error(f"**{model}**\nFailed")
+                        return 'background-color: #D3D3D3'  # Light gray
 
-        # Filtering options
-        st.subheader("🔍 Filter Results")
-        col1, col2, col3 = st.columns(3)
 
-        with col1:
-            filter_tier = st.selectbox(
-                "Filter by ICP Tier",
-                ["All"] + sorted(df['ICP Tier'].unique().tolist()),
-                key="filter_tier"
-            )
+                # Apply styling if Status column exists
+                if 'Status' in val_df.columns:
+                    styled_df = val_df.style.applymap(color_status, subset=['Status'])
+                    st.dataframe(styled_df, use_container_width=True, height=400)
+                else:
+                    st.dataframe(val_df, use_container_width=True, height=400)
 
-        with col2:
-            filter_status = st.selectbox(
-                "Filter by Validation Status",
-                ["All"] + sorted(df['Validation Status'].unique().tolist()),
-                key="filter_status"
-            )
+                # Show raw validation data in expander for debugging
+                with st.expander("🔍 View Raw Validation Data"):
+                    st.json(validated_companies)
 
-        with col3:
-            search_term = st.text_input(
-                "Search Companies",
-                placeholder="Enter company name...",
-                key="search_companies"
-            )
-
-        # Apply filters
-        filtered_df = df.copy()
-
-        if filter_tier != "All":
-            filtered_df = filtered_df[filtered_df['ICP Tier'] == filter_tier]
-
-        if filter_status != "All":
-            filtered_df = filtered_df[filtered_df['Validation Status'] == filter_status]
-
-        if search_term:
-            filtered_df = filtered_df[filtered_df['Company'].str.contains(search_term, case=False, na=False)]
-
-        # Display filtered dataframe
-        st.write(f"Showing {len(filtered_df)} of {len(df)} companies")
-        st.dataframe(filtered_df, use_container_width=True, height=500)
-
-        # Export options
+    # Display existing validation results if available (outside the button click)
+    if st.session_state.validation_results and len(st.session_state.validation_results) > 0:
         st.divider()
-        st.subheader("📥 Export Options")
+        st.subheader("📊 Existing Validation Results")
+
+        # Summary of existing validations
+        existing_verified = len([v for v in st.session_state.validation_results if
+                                 v.get('validation_status', '').lower() in ['verified', 'verify', 'valid']])
+        existing_partial = len([v for v in st.session_state.validation_results if
+                                v.get('validation_status', '').lower() in ['partial', 'partially']])
+        existing_unverified = len([v for v in st.session_state.validation_results if
+                                   v.get('validation_status', '').lower() in ['unverified', 'not verified']])
 
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
-            # CSV export
-            csv = filtered_df.to_csv(index=False)
-            st.download_button(
-                "📥 Download CSV (Filtered)",
-                data=csv,
-                file_name=f"companies_filtered_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-
+            st.metric("Total Validated", len(st.session_state.validation_results))
         with col2:
-            # Excel export with multiple sheets
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Main data sheet
-                filtered_df.to_excel(writer, sheet_name='Companies', index=False)
-
-                # Summary sheet
-                summary_data = {
-                    'Metric': [
-                        'Total Companies',
-                        'Validated',
-                        'Verified',
-                        'Partial',
-                        'Not Validated',
-                        'Tier A',
-                        'Tier B',
-                        'Tier C',
-                        'With Email',
-                        'With Phone',
-                        'With CSR Programs',
-                        'With Risk Signals'
-                    ],
-                    'Count': [
-                        len(df),
-                        validated_count,
-                        verified_count,
-                        len([d for d in df_data if d['Validation Status'] == 'partial']),
-                        len([d for d in df_data if d['Validation Status'] == 'Not Validated']),
-                        len([d for d in df_data if d['ICP Tier'] == 'A']),
-                        len([d for d in df_data if d['ICP Tier'] == 'B']),
-                        len([d for d in df_data if d['ICP Tier'] == 'C']),
-                        len([d for d in df_data if d.get('Email')]),
-                        len([d for d in df_data if d.get('Phone')]),
-                        len([d for d in df_data if d.get('CSR Programs')]),
-                        len([d for d in df_data if d.get('Risk Signals')])
-                    ]
-                }
-
-                # Add parallel execution stats if available
-                if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
-                    summary_data['Metric'].append('Models Used')
-                    summary_data['Count'].append(len(st.session_state.model_success_status))
-
-                    for model, stats in st.session_state.model_success_status.items():
-                        if stats['status'] == 'success':
-                            summary_data['Metric'].append(f'  {model}')
-                            summary_data['Count'].append(stats['companies_found'])
-
-                summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-
-                # Validation details sheet (if validations exist)
-                if st.session_state.validation_results:
-                    val_df = pd.DataFrame(st.session_state.validation_results)
-                    val_df.to_excel(writer, sheet_name='Validation Details', index=False)
-
-                # Model performance sheet (if parallel execution was used)
-                if st.session_state.parallel_execution_enabled and st.session_state.model_success_status:
-                    model_perf_data = []
-                    for model, stats in st.session_state.model_success_status.items():
-                        model_perf_data.append({
-                            'Model': model,
-                            'Status': stats['status'],
-                            'Companies Found': stats.get('companies_found', 0),
-                            'Target': stats.get('target', 0),
-                            'Error': stats.get('error', '')
-                        })
-                    model_perf_df = pd.DataFrame(model_perf_data)
-                    model_perf_df.to_excel(writer, sheet_name='Model Performance', index=False)
-
-            excel_data = output.getvalue()
-
-            st.download_button(
-                "📥 Download Excel (Full)",
-                data=excel_data,
-                file_name=f"companies_full_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
+            st.metric("Verified", existing_verified)
         with col3:
-            # JSON export with all data
-            json_data = []
-            for company in st.session_state.search_results:
-                if hasattr(company, 'dict'):
-                    c = company.dict()
-                elif isinstance(company, dict):
-                    c = company
-                else:
-                    c = {'name': str(company)}
+            st.metric("Partial", existing_partial)
+        with col4:
+            st.metric("Unverified", existing_unverified)
 
-                # Add validation data if exists
-                company_name = c.get('name', 'Unknown')
-                if company_name in validation_map:
-                    c['validation'] = validation_map[company_name]
-
-                json_data.append(c)
-
-            export_data = {
-                'search_results': json_data,
-                'validation_results': st.session_state.validation_results,
-                'metadata': {
-                    'timestamp': datetime.now().isoformat(),
-                    'total_cost': st.session_state.total_cost,
-                    'companies_found': len(st.session_state.search_results),
-                    'companies_validated': len(st.session_state.validation_results),
-                    'validation_rate': f"{validation_rate:.1f}%",
-                    'parallel_execution': st.session_state.parallel_execution_enabled,
-                    'models_used': st.session_state.selected_models if st.session_state.parallel_execution_enabled else []
-                }
+        # Create display table for existing results
+        existing_display_data = []
+        for val_result in st.session_state.validation_results:
+            display_row = {
+                "Company": val_result.get('company_name', 'Unknown'),
+                "Status": val_result.get('validation_status', 'unknown'),
+                "Mode": val_result.get('mode', 'Unknown'),
+                "Credits Used": val_result.get('credits_used', 0),
+                "Timestamp": val_result.get('validation_timestamp', '')
             }
 
-            # Add model performance data if available
-            if st.session_state.model_success_status:
-                export_data['metadata']['model_performance'] = st.session_state.model_success_status
+            # Add key validation fields
+            emails = val_result.get('emails', [])
+            if emails:
+                display_row["Email"] = emails[0]
 
-            json_str = json.dumps(export_data, indent=2, default=str)
-            st.download_button(
-                "📥 Download JSON (Complete)",
-                data=json_str,
-                file_name=f"companies_complete_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
-            )
+            phones = val_result.get('phones', [])
+            if phones:
+                display_row["Phone"] = phones[0]
+            elif val_result.get('phone'):
+                display_row["Phone"] = val_result.get('phone')
 
-        with col4:
-            # Download only validated companies with all their data
-            if validated_count > 0:
-                validated_df = filtered_df[filtered_df['Validation Status'] != 'Not Validated']
-                validated_csv = validated_df.to_csv(index=False)
-                st.download_button(
-                    "📥 Validated Only (CSV)",
-                    data=validated_csv,
-                    file_name=f"validated_companies_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
+            if val_result.get('revenue_range'):
+                display_row["Revenue"] = val_result.get('revenue_range')
+
+            if val_result.get('employee_range'):
+                display_row["Employees"] = val_result.get('employee_range')
+
+            csr_programs = val_result.get('csr_programs', [])
+            if csr_programs:
+                display_row["CSR Programs"] = ', '.join(csr_programs[:3])
+
+            risk_signals = val_result.get('risk_signals', [])
+            if risk_signals:
+                display_row["Risk Signals"] = ', '.join(risk_signals[:3])
+
+            existing_display_data.append(display_row)
+
+        # Display the existing results
+        if existing_display_data:
+            existing_df = pd.DataFrame(existing_display_data)
+
+            # Filter options for existing results
+            col1, col2 = st.columns(2)
+            with col1:
+                filter_existing_status = st.selectbox(
+                    "Filter by Status",
+                    ["All", "Verified", "Partial", "Unverified"],
+                    key="filter_existing_validation"
                 )
+            with col2:
+                search_existing = st.text_input(
+                    "Search Companies",
+                    placeholder="Enter company name...",
+                    key="search_existing_validation"
+                )
+
+            # Apply filters
+            filtered_existing = existing_df.copy()
+
+            if filter_existing_status != "All":
+                status_map = {
+                    "Verified": ['verified', 'verify', 'valid'],
+                    "Partial": ['partial', 'partially'],
+                    "Unverified": ['unverified', 'not verified']
+                }
+                if filter_existing_status in status_map:
+                    filtered_existing = filtered_existing[
+                        filtered_existing['Status'].str.lower().isin(status_map[filter_existing_status])
+                    ]
+
+            if search_existing:
+                filtered_existing = filtered_existing[
+                    filtered_existing['Company'].str.contains(search_existing, case=False, na=False)
+                ]
+
+            st.write(f"Showing {len(filtered_existing)} of {len(existing_df)} validated companies")
+
+
+            # Color code the status column
+            def color_status(val):
+                if isinstance(val, str):
+                    val_lower = val.lower()
+                    if val_lower in ['verified', 'verify', 'valid']:
+                        return 'background-color: #90EE90'  # Light green
+                    elif val_lower in ['partial', 'partially']:
+                        return 'background-color: #FFE4B5'  # Light orange
+                    elif val_lower in ['error', 'failed']:
+                        return 'background-color: #FFB6C1'  # Light red
+                return 'background-color: #D3D3D3'  # Light gray
+
+
+            # Apply styling and display
+            if 'Status' in filtered_existing.columns:
+                styled_existing = filtered_existing.style.applymap(color_status, subset=['Status'])
+                st.dataframe(styled_existing, use_container_width=True, height=400)
             else:
-                st.info("No validated companies")
-    else:
-        st.info("No results yet. Configure criteria and run a search to see results here.")
+                st.dataframe(filtered_existing, use_container_width=True, height=400)
 
-# Tab 5: Help (updated with parallel execution info)
-with tab5:
-    st.header("Help & Documentation")
-
-    st.subheader("📖 Quick Start Guide")
-    st.write("""
-    1. **Select Models** in the sidebar (1-5 models for parallel execution)
-    2. **Select a Profile** or create custom criteria in the Search Configuration tab
-    3. **Execute Search** to find companies matching your criteria
-    4. **Validate** companies to verify their information
-    5. **Export** results as CSV, Excel, or JSON
-    """)
-
-    st.subheader("⚡ Parallel Execution")
-    st.write("""
-    **What is Parallel Execution?**
-    - Run searches across multiple GPT-4.1 deployments simultaneously
-    - Get results up to 5x faster when using all 5 models
-    - Automatic deduplication of results
-    - Resilient to individual model failures
-
-    **How to Use:**
-    1. Select 2-5 models in the sidebar
-    2. Configure your search criteria
-    3. Click "Execute Search" - the system will automatically:
-       - Divide the target count among models
-       - Run all searches in parallel
-       - Combine and deduplicate results
-       - Show performance stats for each model
-
-    **Benefits:**
-    - **Speed**: 5x faster with 5 models
-    - **Reliability**: If one model fails, others continue
-    - **Scale**: Handle larger searches efficiently
-    - **Insights**: See which models perform best
-    """)
-
-    st.subheader("🎯 Profile Descriptions")
-
-    with st.expander("RMH Sydney Profile"):
-        st.write("""
-        **Target:** Companies suitable for Ronald McDonald House Sydney partnerships
-        - **Tier A:** Perfect matches with strong CSR focus on children/community
-        - **Tier B:** Good matches with community involvement
-        - **Tier C:** Potential matches meeting basic criteria
-        """)
-
-    with st.expander("Guide Dogs Victoria Profile"):
-        st.write("""
-        **Target:** Companies suitable for Guide Dogs Victoria partnerships
-        - **Tier A:** Strategic partners with disability/inclusion focus
-        - **Tier B:** Exploratory partners with health/community focus
-        - **Tier C:** Potential partners meeting basic criteria
-        """)
-
-    st.subheader("🔧 Troubleshooting")
-    st.write("""
-    **Parallel Execution Issues:**
-    - If some models fail, the search will still complete with successful models
-    - Check the model performance section for details on failures
-    - Reduce the number of models if consistently seeing failures
-
-    **Performance Tips:**
-    - Use 3-5 models for optimal performance
-    - For small searches (<20 companies), single model may be sufficient
-    - For large searches (100+ companies), parallel execution is recommended
-    """)
-
-# Footer with enhanced stats
-st.divider()
-footer_cols = st.columns(4)
-with footer_cols[0]:
-    st.caption(f"Session Cost: ${st.session_state.total_cost:.3f}")
-with footer_cols[1]:
-    st.caption(f"Companies Found: {len(st.session_state.search_results)}")
-with footer_cols[2]:
-    st.caption(f"Validated: {len(st.session_state.validation_results)}")
-with footer_cols[3]:
-    if st.session_state.parallel_execution_enabled:
-        st.caption(f"⚡ Parallel Mode: {len(st.session_state.selected_models)} models")
-    else:
-        st.caption("Single Model Mode")
+            # Option to clear validation results
+            if st.button("🗑️ Clear All Validation Results", key="clear_validation"):
+                st.session_state.validation_results = []
+                st.rerun()

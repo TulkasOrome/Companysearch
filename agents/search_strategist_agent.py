@@ -1,4 +1,4 @@
-# search_strategist_agent.py - FIXED VERSION with proper imports
+# search_strategist_agent.py - FIXED VERSION with enhanced token handling
 
 import os
 import json
@@ -162,7 +162,7 @@ class EnhancedCompanyEntry(BaseModel):
 
 
 # ============================================================================
-# Agent Classes
+# Agent Classes with Enhanced Token Handling
 # ============================================================================
 
 class OutputValidator:
@@ -212,19 +212,25 @@ class OutputValidator:
 
 
 class StructuredOutputHandler:
-    """Handles structured output generation with GPT-4"""
+    """Handles structured output generation with GPT-4 - ENHANCED TOKEN HANDLING"""
 
     def __init__(self, client, deployment_name: str):
         self.client = client
         self.deployment_name = deployment_name
         self.validator = OutputValidator()
+        # INCREASED TOKEN LIMITS
+        self.max_tokens = 16384  # Increased from 4000
+        self.optimal_batch_size = 20  # Optimal companies per request
 
     async def get_structured_output(self, prompt: str, schema: Dict[str, Any], retry_count: int = 3) -> Any:
-        """Get structured output with retries and validation"""
+        """Get structured output with retries and validation - ENHANCED VERSION"""
         last_error = None
 
         for attempt in range(retry_count):
             try:
+                # Dynamically adjust token limit based on attempt
+                current_max_tokens = self.max_tokens if attempt == 0 else min(self.max_tokens * 2, 32768)
+
                 response = self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
@@ -232,7 +238,7 @@ class StructuredOutputHandler:
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
-                    max_tokens=4000,
+                    max_tokens=current_max_tokens,  # Use dynamic token limit
                     response_format={"type": "json_object"}
                 )
 
@@ -242,6 +248,7 @@ class StructuredOutputHandler:
                 if result and "companies" in result and len(result["companies"]) > 0:
                     return result
                 elif attempt < retry_count - 1:
+                    # Simplify prompt for retry
                     prompt = self._simplify_prompt(prompt)
                     await asyncio.sleep(1)
                 else:
@@ -249,33 +256,93 @@ class StructuredOutputHandler:
 
             except Exception as e:
                 last_error = e
+                print(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2 ** attempt)
 
         return {"companies": [], "error": f"Failed after {retry_count} attempts: {str(last_error)}"}
 
     def _simplify_prompt(self, prompt: str) -> str:
-        """Simplify prompt for retry"""
+        """Simplify prompt for retry - reduce token usage"""
         lines = prompt.splitlines()
         simplified = []
 
+        # Keep essential parts only
         for line in lines[:10]:
             simplified.append(line)
 
+        # Reduce the number of companies requested
         simplified.append(
-            "\nReturn 5 companies as JSON with these fields: name, confidence, operates_in_country, business_type, industry_category, reasoning")
+            "\nReturn 5-10 companies as JSON with these fields: name, confidence, operates_in_country, business_type, industry_category, reasoning, estimated_revenue, estimated_employees")
 
         return "\n".join(simplified)
 
 
+class BatchExecutor:
+    """Handles batch execution with smart chunking"""
+
+    def __init__(self, optimal_batch_size: int = 20):
+        self.optimal_batch_size = optimal_batch_size
+
+    def calculate_batch_sizes(self, target_count: int) -> List[int]:
+        """Calculate optimal batch sizes for a target count"""
+        if target_count <= self.optimal_batch_size:
+            return [target_count]
+
+        batches = []
+        remaining = target_count
+
+        while remaining > 0:
+            batch_size = min(self.optimal_batch_size, remaining)
+            batches.append(batch_size)
+            remaining -= batch_size
+
+        return batches
+
+    async def execute_in_batches(self, agent, criteria: SearchCriteria, target_count: int) -> List[
+        EnhancedCompanyEntry]:
+        """Execute search in optimal batches"""
+        batch_sizes = self.calculate_batch_sizes(target_count)
+        all_companies = []
+
+        print(f"Executing search for {target_count} companies in {len(batch_sizes)} batches: {batch_sizes}")
+
+        for i, batch_size in enumerate(batch_sizes):
+            print(f"Processing batch {i + 1}/{len(batch_sizes)}: {batch_size} companies")
+
+            try:
+                result = await agent._generate_batch(criteria, batch_size)
+                companies = result.get("companies", [])
+                all_companies.extend(companies)
+
+                # Add delay between batches to avoid rate limiting
+                if i < len(batch_sizes) - 1:
+                    await asyncio.sleep(0.5)
+
+            except Exception as e:
+                print(f"Batch {i + 1} failed: {str(e)}")
+                # Try with smaller batch size
+                if batch_size > 5:
+                    print(f"Retrying with smaller batch size: 5")
+                    try:
+                        result = await agent._generate_batch(criteria, 5)
+                        companies = result.get("companies", [])
+                        all_companies.extend(companies)
+                    except:
+                        print(f"Retry also failed, skipping batch")
+
+        return all_companies
+
+
 class EnhancedSearchStrategistAgent:
-    """Enhanced agent with comprehensive search capabilities"""
+    """Enhanced agent with comprehensive search capabilities and TOKEN OPTIMIZATION"""
 
     def __init__(self, deployment_name: str = "gpt-4.1"):
         self.deployment_name = deployment_name
         self.client = None
         self.output_handler = None
         self.validator = OutputValidator()
+        self.batch_executor = BatchExecutor(optimal_batch_size=20)
         self.initialized = False
 
     def _init_llm(self):
@@ -313,6 +380,80 @@ class EnhancedSearchStrategistAgent:
         except Exception as e:
             print(f"Error initializing Azure OpenAI: {str(e)}")
             raise
+
+    async def generate_enhanced_strategy(
+            self,
+            criteria: SearchCriteria,
+            target_count: int = 100
+    ) -> Dict[str, Any]:
+        """Generate search strategy with enhanced criteria - USES BATCH EXECUTION"""
+        if not self.client:
+            self._init_llm()
+
+        # Use batch execution for large requests
+        if target_count > 20:
+            print(f"Using batch execution for {target_count} companies")
+            companies = await self.batch_executor.execute_in_batches(self, criteria, target_count)
+
+            # Process and score companies
+            enhanced_companies = []
+            for company_data in companies:
+                try:
+                    if isinstance(company_data, dict):
+                        company_data = self._ensure_company_fields(company_data)
+                        company = EnhancedCompanyEntry(**company_data)
+                    else:
+                        company = company_data
+                    company = self._calculate_icp_score(company, criteria)
+                    enhanced_companies.append(company)
+                except Exception as e:
+                    print(f"Error processing company: {e}")
+                    continue
+
+            return {
+                "companies": enhanced_companies,
+                "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
+                "metadata": {
+                    "total_found": len(enhanced_companies),
+                    "timestamp": datetime.now().isoformat(),
+                    "deployment": self.deployment_name,
+                    "batch_execution": True
+                }
+            }
+        else:
+            # Single batch for small requests
+            return await self._generate_batch(criteria, target_count)
+
+    async def _generate_batch(self, criteria: SearchCriteria, batch_size: int) -> Dict[str, Any]:
+        """Generate a single batch of companies"""
+        prompt = self._build_enhanced_prompt_fixed(criteria, batch_size)
+
+        result = await self.output_handler.get_structured_output(
+            prompt,
+            schema={"type": "object", "properties": {"companies": {"type": "array"}}}
+        )
+
+        enhanced_companies = []
+        for company_data in result.get("companies", []):
+            try:
+                company_data = self._ensure_company_fields(company_data)
+                company = EnhancedCompanyEntry(**company_data)
+                company = self._calculate_icp_score(company, criteria)
+                enhanced_companies.append(company)
+            except Exception as e:
+                print(f"Error processing company in batch: {e}")
+                continue
+
+        return {
+            "companies": enhanced_companies,
+            "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
+            "metadata": {
+                "total_found": len(enhanced_companies),
+                "timestamp": datetime.now().isoformat(),
+                "deployment": self.deployment_name,
+                "batch_size": batch_size
+            }
+        }
 
     def extract_criteria_from_text(self, free_text: str) -> Dict[str, Any]:
         """Extract structured criteria from free text using GPT-4"""
@@ -370,6 +511,7 @@ class EnhancedSearchStrategistAgent:
                         {"role": "user", "content": extraction_prompt}
                     ],
                     temperature=0.1,
+                    max_tokens=2000,  # Sufficient for extraction
                     response_format={"type": "json_object"}
                 )
                 result = json.loads(response.choices[0].message.content)
@@ -381,7 +523,8 @@ class EnhancedSearchStrategistAgent:
                         {"role": "system", "content": "Extract structured data from text. Return valid JSON."},
                         {"role": "user", "content": extraction_prompt}
                     ],
-                    temperature=0.1
+                    temperature=0.1,
+                    max_tokens=2000
                 )
                 result = json.loads(response['choices'][0]['message']['content'])
 
@@ -433,43 +576,6 @@ class EnhancedSearchStrategistAgent:
             }
         }
 
-    async def generate_enhanced_strategy(
-            self,
-            criteria: SearchCriteria,
-            target_count: int = 100
-    ) -> Dict[str, Any]:
-        """Generate search strategy with enhanced criteria"""
-        if not self.client:
-            self._init_llm()
-
-        prompt = self._build_enhanced_prompt_fixed(criteria, target_count)
-
-        result = await self.output_handler.get_structured_output(
-            prompt,
-            schema={"type": "object", "properties": {"companies": {"type": "array"}}}
-        )
-
-        enhanced_companies = []
-        for company_data in result.get("companies", []):
-            try:
-                company_data = self._ensure_company_fields(company_data)
-                company = EnhancedCompanyEntry(**company_data)
-                company = self._calculate_icp_score(company, criteria)
-                enhanced_companies.append(company)
-            except Exception as e:
-                print(f"Error processing company: {e}")
-                continue
-
-        return {
-            "companies": enhanced_companies,
-            "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
-            "metadata": {
-                "total_found": len(enhanced_companies),
-                "timestamp": datetime.now().isoformat(),
-                "deployment": self.deployment_name
-            }
-        }
-
     def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure all required fields exist in company data"""
         defaults = {
@@ -515,104 +621,61 @@ class EnhancedSearchStrategistAgent:
         return company_data
 
     def _build_enhanced_prompt_fixed(self, criteria: SearchCriteria, target_count: int) -> str:
-        """Build comprehensive prompt from criteria with better formatting"""
+        """Build comprehensive prompt from criteria with better formatting - OPTIMIZED"""
         prompt_parts = []
 
-        prompt_parts.append(f"Find {target_count} companies with these requirements:")
-        prompt_parts.append("")
+        # More concise prompt to reduce token usage
+        prompt_parts.append(f"Find {target_count} companies matching:")
 
-        # Location
-        location_specs = []
-        if criteria.location.countries:
-            location_specs.append(f"Country: {', '.join(criteria.location.countries)}")
-        if criteria.location.states:
-            location_specs.append(f"State: {', '.join(criteria.location.states)}")
-        if criteria.location.cities:
-            location_specs.append(f"City: {', '.join(criteria.location.cities)}")
-        if criteria.location.regions:
-            location_specs.append(f"Region: {', '.join(criteria.location.regions)}")
+        # Location - concise
+        if criteria.location.countries or criteria.location.cities:
+            locations = []
+            if criteria.location.countries:
+                locations.append(f"Countries: {', '.join(criteria.location.countries[:3])}")
+            if criteria.location.cities:
+                locations.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
+            prompt_parts.append("LOCATION: " + "; ".join(locations))
 
-        if location_specs:
-            prompt_parts.append("LOCATION:")
-            prompt_parts.extend(location_specs)
-            prompt_parts.append("")
-
-        # Financial
+        # Financial - concise
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
-            prompt_parts.append("REVENUE:")
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
-                min_m = int(criteria.financial.revenue_min / 1_000_000)
-                max_m = int(criteria.financial.revenue_max / 1_000_000)
-                prompt_parts.append(f"Between {min_m} and {max_m} million {criteria.financial.revenue_currency}")
-            elif criteria.financial.revenue_min:
-                min_m = int(criteria.financial.revenue_min / 1_000_000)
-                prompt_parts.append(f"Above {min_m} million {criteria.financial.revenue_currency}")
-            else:
-                max_m = int(criteria.financial.revenue_max / 1_000_000)
-                prompt_parts.append(f"Up to {max_m} million {criteria.financial.revenue_currency}")
-            prompt_parts.append("")
-
-        # Employees
-        if criteria.organizational.employee_count_min or criteria.organizational.employee_count_max:
-            prompt_parts.append("EMPLOYEES:")
-            if criteria.organizational.employee_count_min and criteria.organizational.employee_count_max:
                 prompt_parts.append(
-                    f"Between {criteria.organizational.employee_count_min} and {criteria.organizational.employee_count_max}")
-            elif criteria.organizational.employee_count_min:
-                prompt_parts.append(f"At least {criteria.organizational.employee_count_min}")
-            else:
-                prompt_parts.append(f"Up to {criteria.organizational.employee_count_max}")
-            prompt_parts.append("")
+                    f"REVENUE: ${int(criteria.financial.revenue_min / 1e6)}-{int(criteria.financial.revenue_max / 1e6)}M {criteria.financial.revenue_currency}")
+            elif criteria.financial.revenue_min:
+                prompt_parts.append(
+                    f"REVENUE: >${int(criteria.financial.revenue_min / 1e6)}M {criteria.financial.revenue_currency}")
 
-        # Industries
+        # Employees - concise
+        if criteria.organizational.employee_count_min:
+            prompt_parts.append(f"EMPLOYEES: {criteria.organizational.employee_count_min}+")
+
+        # Industries - limit to top 3
         if criteria.industries:
-            prompt_parts.append("INDUSTRIES:")
-            for ind in criteria.industries[:5]:
-                prompt_parts.append(f"- {ind['name']}")
-            prompt_parts.append("")
+            ind_names = [ind['name'] for ind in criteria.industries[:3]]
+            prompt_parts.append(f"INDUSTRIES: {', '.join(ind_names)}")
 
         # Business types
         if criteria.business_types:
-            prompt_parts.append(f"BUSINESS TYPES: {', '.join(criteria.business_types)}")
-            prompt_parts.append("")
+            prompt_parts.append(f"TYPES: {', '.join(criteria.business_types[:3])}")
 
-        # CSR
+        # CSR - concise
         if criteria.behavioral.csr_focus_areas:
-            prompt_parts.append(f"CSR FOCUS: {', '.join(criteria.behavioral.csr_focus_areas)}")
-            prompt_parts.append("")
+            prompt_parts.append(f"CSR: {', '.join(criteria.behavioral.csr_focus_areas[:3])}")
 
-        # Exclusions
-        if criteria.excluded_industries:
-            prompt_parts.append(f"EXCLUDE: {', '.join(criteria.excluded_industries)}")
-            prompt_parts.append("")
-
-        # JSON format instruction
-        prompt_parts.append("Return companies as JSON in this exact format:")
-        prompt_parts.append("""
-{
-  "companies": [
-    {
-      "name": "Example Company Pty Ltd",
-      "confidence": "high",
-      "operates_in_country": true,
-      "business_type": "B2B",
-      "industry_category": "Manufacturing",
-      "reasoning": "Australian manufacturing company with 200 employees",
-      "estimated_revenue": "50-100M",
-      "estimated_employees": "100-500",
-      "company_size": "medium",
-      "headquarters": {"city": "Melbourne"},
-      "office_locations": ["Melbourne"],
-      "csr_programs": [],
-      "csr_focus_areas": [],
-      "certifications": [],
-      "recent_events": [],
-      "data_sources": ["public records"]
-    }
-  ]
-}
-
-Important: Return ONLY valid JSON. Each company must have ALL the fields shown above.""")
+        # JSON format - minimal fields to reduce response size
+        prompt_parts.append("\nReturn JSON:")
+        prompt_parts.append("""{"companies":[{
+"name":"Company Name",
+"confidence":"high",
+"operates_in_country":true,
+"business_type":"B2B",
+"industry_category":"Industry",
+"reasoning":"Brief reason",
+"estimated_revenue":"50-100M",
+"estimated_employees":"100-500",
+"headquarters":{"city":"City"},
+"csr_focus_areas":[]
+}]}""")
 
         return "\n".join(prompt_parts)
 
