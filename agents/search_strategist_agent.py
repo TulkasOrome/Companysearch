@@ -1,4 +1,4 @@
-# enhanced_search_agent.py - FIXED VERSION
+# search_strategist_agent.py - FIXED VERSION with proper imports
 
 import os
 import json
@@ -10,30 +10,25 @@ from enum import Enum
 import time
 import re
 from concurrent.futures import ThreadPoolExecutor
-
 from pydantic import BaseModel, Field
-from openai import AzureOpenAI
 
-# Import from core module using absolute imports
+# Azure OpenAI import - using correct syntax for v1.x
 try:
-    # When running as part of the package
-    from core.data_models import (
-        BusinessType,
-        CompanySize,
-        LocationCriteria,
-        FinancialCriteria,
-        OrganizationalCriteria,
-        BehavioralSignals,
-        SearchCriteria,
-        EnhancedCompanyEntry
-    )
+    from openai import AzureOpenAI
 except ImportError:
-    # Fallback for compatibility
-    pass
+    # Fallback for older versions
+    import openai
+
+    AzureOpenAI = None
+    print("Warning: AzureOpenAI not available, trying legacy mode")
 
 
-# Enhanced Business Type Enum
+# ============================================================================
+# Data Models - Define all classes locally to avoid circular imports
+# ============================================================================
+
 class BusinessType(Enum):
+    """Business model types"""
     B2C = "B2C"
     B2B = "B2B"
     B2B2C = "B2B2C"
@@ -42,150 +37,133 @@ class BusinessType(Enum):
     HYBRID = "Hybrid"
     PROFESSIONAL_SERVICES = "Professional Services"
     REAL_ESTATE = "Real Estate"
+    SAAS = "SaaS"
+    ENTERPRISE = "Enterprise"
 
 
-# Enhanced Company Size Classifications
 class CompanySize(Enum):
-    SMALL = "small"  # 1-50 employees or <$10M revenue
-    MEDIUM = "medium"  # 51-500 employees or $10M-$100M revenue
-    ENTERPRISE = "enterprise"  # 500+ employees or $100M+ revenue
+    """Company size classifications"""
+    SMALL = "small"
+    MEDIUM = "medium"
+    ENTERPRISE = "enterprise"
     UNKNOWN = "unknown"
 
 
-# Enhanced location with proximity support
 @dataclass
 class LocationCriteria:
+    """Location search criteria"""
     countries: List[str] = field(default_factory=list)
     states: List[str] = field(default_factory=list)
     cities: List[str] = field(default_factory=list)
     regions: List[str] = field(default_factory=list)
-    proximity: Optional[Dict[str, Any]] = None  # {"location": "Sydney CBD", "radius_km": 50}
+    proximity: Optional[Dict[str, Any]] = None
     exclusions: List[str] = field(default_factory=list)
 
 
 @dataclass
 class FinancialCriteria:
+    """Financial search criteria"""
     revenue_min: Optional[float] = None
     revenue_max: Optional[float] = None
     revenue_currency: str = "USD"
     giving_capacity_min: Optional[float] = None
     growth_rate_min: Optional[float] = None
     profitable: Optional[bool] = None
+    funding_stage: Optional[str] = None
 
 
 @dataclass
 class OrganizationalCriteria:
+    """Organizational search criteria"""
     employee_count_min: Optional[int] = None
     employee_count_max: Optional[int] = None
-    employee_count_by_location: Optional[Dict[str, int]] = None  # {"Victoria": 150}
-    office_types: List[str] = field(default_factory=list)  # ["HQ", "Regional", "Branch"]
-    company_stage: Optional[str] = None  # "Startup", "Growth", "Mature"
+    employee_count_by_location: Optional[Dict[str, int]] = None
+    office_types: List[str] = field(default_factory=list)
+    company_stage: Optional[str] = None
+    years_in_business_min: Optional[int] = None
 
 
 @dataclass
 class BehavioralSignals:
+    """Behavioral and CSR signals"""
     csr_programs: List[str] = field(default_factory=list)
-    csr_focus_areas: List[str] = field(default_factory=list)  # ["children", "education", "environment"]
-    certifications: List[str] = field(default_factory=list)  # ["B-Corp", "ISO 26000"]
-    recent_events: List[str] = field(default_factory=list)  # ["office move", "expansion", "CSR launch"]
+    csr_focus_areas: List[str] = field(default_factory=list)
+    certifications: List[str] = field(default_factory=list)
+    recent_events: List[str] = field(default_factory=list)
     technology_stack: List[str] = field(default_factory=list)
-    esg_maturity: Optional[str] = None  # "Basic", "Developing", "Mature", "Leading"
+    esg_maturity: Optional[str] = None
+    partnerships: List[str] = field(default_factory=list)
 
 
 @dataclass
 class SearchCriteria:
-    # Core criteria
+    """Complete search criteria"""
     location: LocationCriteria
     financial: FinancialCriteria
     organizational: OrganizationalCriteria
     behavioral: BehavioralSignals
-
-    # Industry and business
     business_types: List[str] = field(default_factory=list)
-    industries: List[Dict[str, Any]] = field(default_factory=list)  # [{"name": "Construction", "priority": 1}]
-
-    # Custom search
+    industries: List[Dict[str, Any]] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
     custom_prompt: Optional[str] = None
-
-    # Exclusions
     excluded_industries: List[str] = field(default_factory=list)
     excluded_companies: List[str] = field(default_factory=list)
-    excluded_behaviors: List[str] = field(default_factory=list)  # ["misconduct", "controversies"]
+    excluded_behaviors: List[str] = field(default_factory=list)
 
 
-# Enhanced Company Entry with all new fields
 class EnhancedCompanyEntry(BaseModel):
-    # Basic info (existing)
+    """Complete enhanced company entry with all fields"""
+    # Basic info
     name: str = Field(description="Company name")
-    confidence: str = Field(description="Confidence level: absolute, high, medium, low")
+    confidence: str = Field(description="Confidence level")
     operates_in_country: bool = Field(description="Whether company operates in the specified country")
     business_type: str = Field(description="Type of business")
     industry_category: str = Field(description="Industry category")
     sub_industry: Optional[str] = Field(description="Sub-industry or niche", default=None)
-
-    # Geographic footprint
-    headquarters: Optional[Dict[str, Any]] = Field(
-        description="HQ location with address and coordinates",
-        default=None
-    )
-    office_locations: List[Any] = Field(
-        description="List of office locations - can be strings or dicts",
-        default_factory=list
-    )
-    service_areas: List[str] = Field(
-        description="Geographic areas where company provides services",
-        default_factory=list
-    )
-
-    # Financial profile
-    estimated_revenue: Optional[str] = Field(description="Estimated annual revenue range", default=None)
-    revenue_currency: Optional[str] = Field(description="Currency of revenue", default="USD")
-    estimated_employees: Optional[str] = Field(description="Estimated employee count range", default=None)
-    employees_by_location: Optional[Dict[str, str]] = Field(
-        description="Employee count by location",
-        default=None
-    )
-    company_size: Optional[str] = Field(description="Company size classification", default="unknown")
-    giving_history: List[Dict[str, Any]] = Field(
-        description="Historical giving/donation data",
-        default_factory=list
-    )
-    financial_health: Optional[str] = Field(description="Growth, stable, declining", default=None)
-
-    # CSR/ESG Profile
-    csr_programs: List[str] = Field(description="CSR programs and initiatives", default_factory=list)
-    csr_focus_areas: List[str] = Field(description="Primary CSR focus areas", default_factory=list)
-    certifications: List[str] = Field(description="Certifications like B-Corp", default_factory=list)
-    esg_score: Optional[float] = Field(description="ESG score if available", default=None)
-    esg_maturity: Optional[str] = Field(description="ESG maturity level", default=None)
-    community_involvement: List[str] = Field(description="Community programs", default_factory=list)
-
-    # Signals and triggers
-    recent_events: List[Any] = Field(
-        description="Recent events - can be strings or dicts",
-        default_factory=list
-    )
-    leadership_changes: List[Dict[str, Any]] = Field(
-        description="Recent leadership changes",
-        default_factory=list
-    )
-    growth_signals: List[str] = Field(description="Indicators of growth", default_factory=list)
-
-    # ICP Matching
-    icp_tier: Optional[str] = Field(description="Tier A, B, C based on criteria match", default=None)
-    icp_score: Optional[float] = Field(description="Overall ICP match score 0-100", default=None)
-    matched_criteria: List[str] = Field(description="Which criteria were matched", default_factory=list)
-    missing_criteria: List[str] = Field(description="Which criteria were not met", default_factory=list)
-
-    # Data quality
-    data_freshness: Optional[str] = Field(description="When data was last updated", default=None)
-    data_sources: List[str] = Field(description="Sources used for this data", default_factory=list)
-    validation_notes: Optional[str] = Field(description="Any validation notes", default=None)
-
-    # Original fields kept for compatibility
     reasoning: str = Field(description="Brief reasoning for confidence level")
 
+    # Geographic footprint
+    headquarters: Optional[Dict[str, Any]] = Field(default=None)
+    office_locations: List[Any] = Field(default_factory=list)
+    service_areas: List[str] = Field(default_factory=list)
+
+    # Financial profile
+    estimated_revenue: Optional[str] = Field(default=None)
+    revenue_currency: Optional[str] = Field(default="USD")
+    estimated_employees: Optional[str] = Field(default=None)
+    employees_by_location: Optional[Dict[str, str]] = Field(default=None)
+    company_size: Optional[str] = Field(default="unknown")
+    giving_history: List[Dict[str, Any]] = Field(default_factory=list)
+    financial_health: Optional[str] = Field(default=None)
+
+    # CSR/ESG Profile
+    csr_programs: List[str] = Field(default_factory=list)
+    csr_focus_areas: List[str] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    esg_score: Optional[float] = Field(default=None)
+    esg_maturity: Optional[str] = Field(default=None)
+    community_involvement: List[str] = Field(default_factory=list)
+
+    # Signals and triggers
+    recent_events: List[Any] = Field(default_factory=list)
+    leadership_changes: List[Dict[str, Any]] = Field(default_factory=list)
+    growth_signals: List[str] = Field(default_factory=list)
+
+    # ICP Matching
+    icp_tier: Optional[str] = Field(default=None)
+    icp_score: Optional[float] = Field(default=None)
+    matched_criteria: List[str] = Field(default_factory=list)
+    missing_criteria: List[str] = Field(default_factory=list)
+
+    # Data quality
+    data_freshness: Optional[str] = Field(default=None)
+    data_sources: List[str] = Field(default_factory=list)
+    validation_notes: Optional[str] = Field(default=None)
+
+
+# ============================================================================
+# Agent Classes
+# ============================================================================
 
 class OutputValidator:
     """Validates and fixes AI output formatting issues"""
@@ -196,25 +174,20 @@ class OutputValidator:
     def validate_and_fix(self, response: str, expected_type: type) -> Any:
         """Validate and attempt to fix malformed responses"""
         try:
-            # First attempt: direct parsing
             if isinstance(response, str):
                 parsed = json.loads(response)
             else:
                 parsed = response
             return parsed
         except json.JSONDecodeError as e:
-            # Try to fix common issues
             return self.fix_malformed_json(response, e)
 
     def fix_malformed_json(self, response: str, error: json.JSONDecodeError) -> Any:
         """Attempt to fix common JSON formatting issues"""
-        # Handle truncated responses
         if "Unterminated string" in str(error) or response.count('{') > response.count('}'):
-            # Try to complete the JSON
             if response.rstrip().endswith(','):
                 response = response.rstrip()[:-1]
 
-            # Count brackets and try to balance
             open_brackets = response.count('{') - response.count('}')
             open_squares = response.count('[') - response.count(']')
 
@@ -228,7 +201,6 @@ class OutputValidator:
             except:
                 pass
 
-        # Try to extract JSON from mixed content
         json_match = re.search(r'\{.*\}', response, re.DOTALL)
         if json_match:
             try:
@@ -236,14 +208,13 @@ class OutputValidator:
             except:
                 pass
 
-        # Return empty structure if all else fails
         return {"companies": [], "error": "Failed to parse response"}
 
 
 class StructuredOutputHandler:
     """Handles structured output generation with GPT-4"""
 
-    def __init__(self, client: AzureOpenAI, deployment_name: str):
+    def __init__(self, client, deployment_name: str):
         self.client = client
         self.deployment_name = deployment_name
         self.validator = OutputValidator()
@@ -254,14 +225,13 @@ class StructuredOutputHandler:
 
         for attempt in range(retry_count):
             try:
-                # FIXED: Simplified system prompt and adjusted temperature
                 response = self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
                         {"role": "system", "content": "You are a company finder. Respond with valid JSON only."},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.3,  # Slightly higher for more variety
+                    temperature=0.3,
                     max_tokens=4000,
                     response_format={"type": "json_object"}
                 )
@@ -269,11 +239,9 @@ class StructuredOutputHandler:
                 content = response.choices[0].message.content
                 result = self.validator.validate_and_fix(content, dict)
 
-                # Check if we got companies
                 if result and "companies" in result and len(result["companies"]) > 0:
                     return result
                 elif attempt < retry_count - 1:
-                    # Retry with simpler prompt
                     prompt = self._simplify_prompt(prompt)
                     await asyncio.sleep(1)
                 else:
@@ -284,19 +252,16 @@ class StructuredOutputHandler:
                 if attempt < retry_count - 1:
                     await asyncio.sleep(2 ** attempt)
 
-        # Return partial results if all attempts fail
         return {"companies": [], "error": f"Failed after {retry_count} attempts: {str(last_error)}"}
 
     def _simplify_prompt(self, prompt: str) -> str:
         """Simplify prompt for retry"""
-        # Remove complex formatting and reduce requirements
         lines = prompt.splitlines()
         simplified = []
 
-        for line in lines[:10]:  # Keep first 10 lines of criteria
+        for line in lines[:10]:
             simplified.append(line)
 
-        # Add simplified output format
         simplified.append(
             "\nReturn 5 companies as JSON with these fields: name, confidence, operates_in_country, business_type, industry_category, reasoning")
 
@@ -311,17 +276,40 @@ class EnhancedSearchStrategistAgent:
         self.client = None
         self.output_handler = None
         self.validator = OutputValidator()
+        self.initialized = False
 
     def _init_llm(self):
         """Initialize the LLM with Azure OpenAI"""
+        if self.initialized:
+            return
+
         try:
-            self.client = AzureOpenAI(
-                api_key="CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1",
-                api_version="2024-02-01",
-                azure_endpoint="https://amex-openai-2025.openai.azure.com/"
-            )
+            # Get credentials from environment or use defaults
+            api_key = os.getenv("AZURE_OPENAI_KEY",
+                                "CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1")
+            api_version = os.getenv("AZURE_API_VERSION", "2024-02-01")
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://amex-openai-2025.openai.azure.com/")
+
+            if AzureOpenAI:
+                # Use new v1.x syntax
+                self.client = AzureOpenAI(
+                    api_key=api_key,
+                    api_version=api_version,
+                    azure_endpoint=azure_endpoint
+                )
+            else:
+                # Fallback to old syntax if needed
+                import openai
+                openai.api_type = "azure"
+                openai.api_key = api_key
+                openai.api_version = api_version
+                openai.api_base = azure_endpoint
+                self.client = openai
+
             self.output_handler = StructuredOutputHandler(self.client, self.deployment_name)
+            self.initialized = True
             print(f"Successfully initialized Azure OpenAI client with deployment: {self.deployment_name}")
+
         except Exception as e:
             print(f"Error initializing Azure OpenAI: {str(e)}")
             raise
@@ -374,23 +362,32 @@ class EnhancedSearchStrategistAgent:
         """
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.deployment_name,
-                messages=[
-                    {"role": "system", "content": "Extract structured data from text. Return valid JSON."},
-                    {"role": "user", "content": extraction_prompt}
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
+            if AzureOpenAI and hasattr(self.client, 'chat'):
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    messages=[
+                        {"role": "system", "content": "Extract structured data from text. Return valid JSON."},
+                        {"role": "user", "content": extraction_prompt}
+                    ],
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+                result = json.loads(response.choices[0].message.content)
+            else:
+                # Fallback for older OpenAI library
+                response = openai.ChatCompletion.create(
+                    engine=self.deployment_name,
+                    messages=[
+                        {"role": "system", "content": "Extract structured data from text. Return valid JSON."},
+                        {"role": "user", "content": extraction_prompt}
+                    ],
+                    temperature=0.1
+                )
+                result = json.loads(response['choices'][0]['message']['content'])
 
-            result = json.loads(response.choices[0].message.content)
-
-            # Ensure proper structure
             if not isinstance(result, dict):
                 return self._get_default_extraction()
 
-            # Ensure all required keys exist
             for key in ['locations', 'financial', 'organizational', 'behavioral']:
                 if key not in result or not isinstance(result[key], dict):
                     result[key] = self._get_default_extraction()[key]
@@ -445,23 +442,18 @@ class EnhancedSearchStrategistAgent:
         if not self.client:
             self._init_llm()
 
-        # Build comprehensive search prompt - FIXED VERSION
         prompt = self._build_enhanced_prompt_fixed(criteria, target_count)
 
-        # Get structured output
         result = await self.output_handler.get_structured_output(
             prompt,
             schema={"type": "object", "properties": {"companies": {"type": "array"}}}
         )
 
-        # Process and enhance company entries
         enhanced_companies = []
         for company_data in result.get("companies", []):
             try:
-                # Ensure all required fields exist with defaults
                 company_data = self._ensure_company_fields(company_data)
                 company = EnhancedCompanyEntry(**company_data)
-                # Calculate ICP score
                 company = self._calculate_icp_score(company, criteria)
                 enhanced_companies.append(company)
             except Exception as e:
@@ -480,7 +472,6 @@ class EnhancedSearchStrategistAgent:
 
     def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure all required fields exist in company data"""
-        # Required fields with defaults
         defaults = {
             "name": "Unknown Company",
             "confidence": "low",
@@ -517,7 +508,6 @@ class EnhancedSearchStrategistAgent:
             "validation_notes": None
         }
 
-        # Merge with defaults
         for key, default_value in defaults.items():
             if key not in company_data:
                 company_data[key] = default_value
@@ -525,14 +515,13 @@ class EnhancedSearchStrategistAgent:
         return company_data
 
     def _build_enhanced_prompt_fixed(self, criteria: SearchCriteria, target_count: int) -> str:
-        """FIXED: Build comprehensive prompt from criteria with better formatting"""
+        """Build comprehensive prompt from criteria with better formatting"""
         prompt_parts = []
 
-        # Simple header
         prompt_parts.append(f"Find {target_count} companies with these requirements:")
-        prompt_parts.append("")  # Empty line for clarity
+        prompt_parts.append("")
 
-        # Location - simplified
+        # Location
         location_specs = []
         if criteria.location.countries:
             location_specs.append(f"Country: {', '.join(criteria.location.countries)}")
@@ -548,7 +537,7 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.extend(location_specs)
             prompt_parts.append("")
 
-        # Financial - FIXED formatting
+        # Financial
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
             prompt_parts.append("REVENUE:")
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
@@ -563,7 +552,7 @@ class EnhancedSearchStrategistAgent:
                 prompt_parts.append(f"Up to {max_m} million {criteria.financial.revenue_currency}")
             prompt_parts.append("")
 
-        # Employees - simplified
+        # Employees
         if criteria.organizational.employee_count_min or criteria.organizational.employee_count_max:
             prompt_parts.append("EMPLOYEES:")
             if criteria.organizational.employee_count_min and criteria.organizational.employee_count_max:
@@ -575,10 +564,10 @@ class EnhancedSearchStrategistAgent:
                 prompt_parts.append(f"Up to {criteria.organizational.employee_count_max}")
             prompt_parts.append("")
 
-        # Industries - simplified
+        # Industries
         if criteria.industries:
             prompt_parts.append("INDUSTRIES:")
-            for ind in criteria.industries[:5]:  # Limit to 5
+            for ind in criteria.industries[:5]:
                 prompt_parts.append(f"- {ind['name']}")
             prompt_parts.append("")
 
@@ -587,7 +576,7 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.append(f"BUSINESS TYPES: {', '.join(criteria.business_types)}")
             prompt_parts.append("")
 
-        # CSR if specified
+        # CSR
         if criteria.behavioral.csr_focus_areas:
             prompt_parts.append(f"CSR FOCUS: {', '.join(criteria.behavioral.csr_focus_areas)}")
             prompt_parts.append("")
@@ -597,7 +586,7 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.append(f"EXCLUDE: {', '.join(criteria.excluded_industries)}")
             prompt_parts.append("")
 
-        # SIMPLIFIED JSON format instruction
+        # JSON format instruction
         prompt_parts.append("Return companies as JSON in this exact format:")
         prompt_parts.append("""
 {
@@ -627,10 +616,6 @@ Important: Return ONLY valid JSON. Each company must have ALL the fields shown a
 
         return "\n".join(prompt_parts)
 
-    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
-        """Fallback to fixed version"""
-        return self._build_enhanced_prompt_fixed(criteria, target_count)
-
     def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
         """Calculate ICP score and tier for a company"""
         score = 0
@@ -642,33 +627,28 @@ Important: Return ONLY valid JSON. Each company must have ALL the fields shown a
         max_score += 20
         location_matched = False
 
-        # Check various location fields
         if company.headquarters or company.office_locations:
             company_locations = str(company.headquarters).lower() if company.headquarters else ""
             company_locations += " " + " ".join(str(loc).lower() for loc in company.office_locations)
 
-            # Check cities
             if criteria.location.cities:
                 if any(city.lower() in company_locations for city in criteria.location.cities):
                     score += 20
                     matched.append("Location - City match")
                     location_matched = True
 
-            # Check regions
             if not location_matched and criteria.location.regions:
                 if any(region.lower() in company_locations for region in criteria.location.regions):
                     score += 20
                     matched.append("Location - Region match")
                     location_matched = True
 
-            # Check states
             if not location_matched and criteria.location.states:
                 if any(state.lower() in company_locations for state in criteria.location.states):
                     score += 15
                     matched.append("Location - State match")
                     location_matched = True
 
-            # Check countries
             if not location_matched and company.operates_in_country:
                 score += 10
                 matched.append("Location - Country match")
@@ -704,14 +684,12 @@ Important: Return ONLY valid JSON. Each company must have ALL the fields shown a
         max_score += 30
         csr_score = 0
 
-        # CSR focus areas (15 points)
         if criteria.behavioral.csr_focus_areas and company.csr_focus_areas:
             matching_areas = set(criteria.behavioral.csr_focus_areas) & set(company.csr_focus_areas)
             if matching_areas:
                 csr_score += 15
                 matched.append(f"CSR focus areas: {', '.join(matching_areas)}")
 
-        # Certifications (10 points)
         if criteria.behavioral.certifications and company.certifications:
             matching_certs = set(criteria.behavioral.certifications) & set(company.certifications)
             if matching_certs:
@@ -742,5 +720,5 @@ Important: Return ONLY valid JSON. Each company must have ALL the fields shown a
         return company
 
 
-# Backward compatibility
+# Backward compatibility alias
 SearchStrategistAgent = EnhancedSearchStrategistAgent

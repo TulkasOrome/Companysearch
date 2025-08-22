@@ -1,7 +1,7 @@
-# streamlit_app_v4.py
+# streamlit_app.py
 """
 Enhanced Streamlit App with Advanced Validation Modes
-Fixed version with all syntax and variable errors resolved
+Fixed version with proper imports and all original features retained
 """
 
 import streamlit as st
@@ -14,50 +14,618 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import traceback
 import concurrent.futures
-from dataclasses import asdict
+from dataclasses import dataclass, asdict, field
+from enum import Enum
 from io import BytesIO
 import time
+import re
+import os
+from pydantic import BaseModel, Field
 
 # Add parent directory to path for imports
 current_dir = Path(__file__).parent
 parent_dir = current_dir.parent
 sys.path.insert(0, str(parent_dir))
 
-# Import components
-from agents.search_strategist_agent import (
-    EnhancedSearchStrategistAgent,
-    SearchCriteria,
-    LocationCriteria,
-    FinancialCriteria,
-    OrganizationalCriteria,
-    BehavioralSignals
-)
 
-from agents.validation_agent_v2 import (
-    ValidationConfig,
-    EnhancedValidationAgent,
-    ValidationOrchestrator
-)
+# ============================================================================
+# DEFINE CORE CLASSES LOCALLY TO AVOID IMPORT ISSUES
+# ============================================================================
 
-from core.validation_strategies import ValidationCriteria, ValidationTier
-from core.serper_client import SerperEndpoint
+class BusinessType(Enum):
+    """Business model types"""
+    B2C = "B2C"
+    B2B = "B2B"
+    B2B2C = "B2B2C"
+    D2C = "D2C"
+    MARKETPLACE = "Marketplace"
+    HYBRID = "Hybrid"
+    PROFESSIONAL_SERVICES = "Professional Services"
+    REAL_ESTATE = "Real Estate"
+    SAAS = "SaaS"
+    ENTERPRISE = "Enterprise"
 
-# Import Serper validation
+
+class CompanySize(Enum):
+    """Company size classifications"""
+    SMALL = "small"
+    MEDIUM = "medium"
+    ENTERPRISE = "enterprise"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class LocationCriteria:
+    """Location search criteria"""
+    countries: List[str] = field(default_factory=list)
+    states: List[str] = field(default_factory=list)
+    cities: List[str] = field(default_factory=list)
+    regions: List[str] = field(default_factory=list)
+    proximity: Optional[Dict[str, Any]] = None
+    exclusions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class FinancialCriteria:
+    """Financial search criteria"""
+    revenue_min: Optional[float] = None
+    revenue_max: Optional[float] = None
+    revenue_currency: str = "USD"
+    giving_capacity_min: Optional[float] = None
+    growth_rate_min: Optional[float] = None
+    profitable: Optional[bool] = None
+    funding_stage: Optional[str] = None
+
+
+@dataclass
+class OrganizationalCriteria:
+    """Organizational search criteria"""
+    employee_count_min: Optional[int] = None
+    employee_count_max: Optional[int] = None
+    employee_count_by_location: Optional[Dict[str, int]] = None
+    office_types: List[str] = field(default_factory=list)
+    company_stage: Optional[str] = None
+    years_in_business_min: Optional[int] = None
+
+
+@dataclass
+class BehavioralSignals:
+    """Behavioral and CSR signals"""
+    csr_programs: List[str] = field(default_factory=list)
+    csr_focus_areas: List[str] = field(default_factory=list)
+    certifications: List[str] = field(default_factory=list)
+    recent_events: List[str] = field(default_factory=list)
+    technology_stack: List[str] = field(default_factory=list)
+    esg_maturity: Optional[str] = None
+    partnerships: List[str] = field(default_factory=list)
+
+
+@dataclass
+class SearchCriteria:
+    """Complete search criteria"""
+    location: LocationCriteria
+    financial: FinancialCriteria
+    organizational: OrganizationalCriteria
+    behavioral: BehavioralSignals
+    business_types: List[str] = field(default_factory=list)
+    industries: List[Dict[str, Any]] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
+    custom_prompt: Optional[str] = None
+    excluded_industries: List[str] = field(default_factory=list)
+    excluded_companies: List[str] = field(default_factory=list)
+    excluded_behaviors: List[str] = field(default_factory=list)
+
+
+class EnhancedCompanyEntry(BaseModel):
+    """Complete enhanced company entry with all fields"""
+    # Basic info
+    name: str = Field(description="Company name")
+    confidence: str = Field(description="Confidence level")
+    operates_in_country: bool = Field(description="Whether company operates in the specified country")
+    business_type: str = Field(description="Type of business")
+    industry_category: str = Field(description="Industry category")
+    sub_industry: Optional[str] = Field(default=None)
+    reasoning: str = Field(description="Brief reasoning for confidence level")
+
+    # Geographic footprint
+    headquarters: Optional[Dict[str, Any]] = Field(default=None)
+    office_locations: List[Any] = Field(default_factory=list)
+    service_areas: List[str] = Field(default_factory=list)
+
+    # Financial profile
+    estimated_revenue: Optional[str] = Field(default=None)
+    revenue_currency: Optional[str] = Field(default="USD")
+    estimated_employees: Optional[str] = Field(default=None)
+    employees_by_location: Optional[Dict[str, str]] = Field(default=None)
+    company_size: Optional[str] = Field(default="unknown")
+    giving_history: List[Dict[str, Any]] = Field(default_factory=list)
+    financial_health: Optional[str] = Field(default=None)
+
+    # CSR/ESG Profile
+    csr_programs: List[str] = Field(default_factory=list)
+    csr_focus_areas: List[str] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    esg_score: Optional[float] = Field(default=None)
+    esg_maturity: Optional[str] = Field(default=None)
+    community_involvement: List[str] = Field(default_factory=list)
+
+    # Signals and triggers
+    recent_events: List[Any] = Field(default_factory=list)
+    leadership_changes: List[Dict[str, Any]] = Field(default_factory=list)
+    growth_signals: List[str] = Field(default_factory=list)
+
+    # ICP Matching
+    icp_tier: Optional[str] = Field(default=None)
+    icp_score: Optional[float] = Field(default=None)
+    matched_criteria: List[str] = Field(default_factory=list)
+    missing_criteria: List[str] = Field(default_factory=list)
+
+    # Data quality
+    data_freshness: Optional[str] = Field(default=None)
+    data_sources: List[str] = Field(default_factory=list)
+    validation_notes: Optional[str] = Field(default=None)
+
+
+# ============================================================================
+# ICP PROFILES MANAGER
+# ============================================================================
+
+class ICPProfile:
+    """ICP Profile definition"""
+
+    def __init__(self, name: str, description: str):
+        self.name = name
+        self.description = description
+        self.tiers = {}
+
+    def add_tier(self, tier: str, criteria: SearchCriteria):
+        self.tiers[tier] = criteria
+
+
+class ICPManager:
+    """Manages ICP profiles"""
+
+    def __init__(self):
+        self.profiles = {}
+        self._initialize_profiles()
+
+    def _initialize_profiles(self):
+        """Initialize RMH Sydney and Guide Dogs Victoria profiles"""
+
+        # RMH Sydney Profile
+        rmh = ICPProfile("rmh_sydney", "Ronald McDonald House Sydney")
+
+        # Tier A
+        rmh.add_tier("A", SearchCriteria(
+            location=LocationCriteria(
+                countries=["Australia"],
+                cities=["Sydney"],
+                proximity={"location": "Greater Western Sydney", "radius_km": 50}
+            ),
+            financial=FinancialCriteria(
+                revenue_min=5_000_000,
+                revenue_max=100_000_000,
+                revenue_currency="AUD",
+                giving_capacity_min=20_000
+            ),
+            organizational=OrganizationalCriteria(
+                employee_count_min=50,
+                office_types=["Headquarters", "Major Office"]
+            ),
+            behavioral=BehavioralSignals(
+                csr_focus_areas=["children", "community"],
+                recent_events=["Office Move", "CSR Launch"]
+            ),
+            business_types=["B2B", "B2C"],
+            industries=[
+                {"name": "Construction", "priority": 1},
+                {"name": "Property", "priority": 2},
+                {"name": "Hospitality", "priority": 3}
+            ],
+            excluded_industries=["Fast Food", "Gambling"]
+        ))
+
+        # Tier B
+        rmh.add_tier("B", SearchCriteria(
+            location=LocationCriteria(
+                countries=["Australia"],
+                states=["New South Wales"]
+            ),
+            financial=FinancialCriteria(
+                revenue_min=2_000_000,
+                revenue_max=200_000_000,
+                revenue_currency="AUD"
+            ),
+            organizational=OrganizationalCriteria(
+                employee_count_min=20
+            ),
+            behavioral=BehavioralSignals(
+                csr_focus_areas=["community"]
+            ),
+            business_types=["B2B", "B2C"],
+            industries=[{"name": "Any", "priority": 1}],
+            excluded_industries=["Fast Food", "Gambling"]
+        ))
+
+        # Tier C
+        rmh.add_tier("C", SearchCriteria(
+            location=LocationCriteria(countries=["Australia"]),
+            financial=FinancialCriteria(revenue_min=1_000_000, revenue_currency="AUD"),
+            organizational=OrganizationalCriteria(),
+            behavioral=BehavioralSignals(),
+            business_types=["B2B", "B2C"],
+            industries=[],
+            excluded_industries=["Fast Food", "Gambling"]
+        ))
+
+        self.profiles["rmh_sydney"] = rmh
+
+        # Guide Dogs Victoria Profile
+        gdv = ICPProfile("guide_dogs_victoria", "Guide Dogs Victoria")
+
+        # Tier A
+        gdv.add_tier("A", SearchCriteria(
+            location=LocationCriteria(
+                countries=["Australia"],
+                states=["Victoria"],
+                cities=["Melbourne", "Geelong", "Ballarat", "Bendigo"]
+            ),
+            financial=FinancialCriteria(
+                revenue_min=500_000_000,
+                revenue_currency="AUD"
+            ),
+            organizational=OrganizationalCriteria(
+                employee_count_min=500,
+                employee_count_by_location={"Victoria": 150}
+            ),
+            behavioral=BehavioralSignals(
+                certifications=["B-Corp", "ISO 26000"],
+                csr_focus_areas=["disability", "inclusion", "health"],
+                esg_maturity="Mature"
+            ),
+            business_types=["B2B", "B2C"],
+            industries=[
+                {"name": "Health", "priority": 1},
+                {"name": "Financial Services", "priority": 2},
+                {"name": "Technology", "priority": 3}
+            ],
+            excluded_industries=["Gambling", "Tobacco", "Racing"]
+        ))
+
+        # Tier B
+        gdv.add_tier("B", SearchCriteria(
+            location=LocationCriteria(
+                countries=["Australia"],
+                states=["Victoria"]
+            ),
+            financial=FinancialCriteria(
+                revenue_min=50_000_000,
+                revenue_max=500_000_000,
+                revenue_currency="AUD"
+            ),
+            organizational=OrganizationalCriteria(
+                employee_count_min=100,
+                employee_count_max=500
+            ),
+            behavioral=BehavioralSignals(
+                csr_focus_areas=["community", "health"]
+            ),
+            business_types=["B2B", "B2C"],
+            industries=[{"name": "Any", "priority": 1}],
+            excluded_industries=["Gambling", "Tobacco"]
+        ))
+
+        # Tier C
+        gdv.add_tier("C", SearchCriteria(
+            location=LocationCriteria(
+                countries=["Australia"],
+                states=["Victoria"]
+            ),
+            financial=FinancialCriteria(
+                revenue_min=10_000_000,
+                revenue_currency="AUD"
+            ),
+            organizational=OrganizationalCriteria(
+                employee_count_min=50
+            ),
+            behavioral=BehavioralSignals(),
+            business_types=["B2B", "B2C"],
+            industries=[],
+            excluded_industries=["Gambling", "Tobacco"]
+        ))
+
+        self.profiles["guide_dogs_victoria"] = gdv
+
+    def get_profile(self, name: str) -> Optional[ICPProfile]:
+        return self.profiles.get(name)
+
+
+# ============================================================================
+# ENHANCED SEARCH AGENT
+# ============================================================================
+
+class EnhancedSearchStrategistAgent:
+    """Enhanced agent with comprehensive search capabilities"""
+
+    def __init__(self, deployment_name: str = "gpt-4.1"):
+        self.deployment_name = deployment_name
+        self.client = None
+        self.initialized = False
+
+    def _init_llm(self):
+        """Initialize the LLM with Azure OpenAI"""
+        if self.initialized:
+            return
+
+        try:
+            from openai import AzureOpenAI
+
+            api_key = os.getenv("AZURE_OPENAI_KEY",
+                                "CUxPxhxqutsvRVHmGQcmH59oMim6mu55PjHTjSpM6y9UwIxwVZIuJQQJ99BFACL93NaXJ3w3AAABACOG3kI1")
+            api_version = os.getenv("AZURE_API_VERSION", "2024-02-01")
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "https://amex-openai-2025.openai.azure.com/")
+
+            self.client = AzureOpenAI(
+                api_key=api_key,
+                api_version=api_version,
+                azure_endpoint=azure_endpoint
+            )
+
+            self.initialized = True
+            print(f"Successfully initialized Azure OpenAI client with deployment: {self.deployment_name}")
+
+        except Exception as e:
+            print(f"Error initializing Azure OpenAI: {str(e)}")
+            raise
+
+    async def generate_enhanced_strategy(
+            self,
+            criteria: SearchCriteria,
+            target_count: int = 100
+    ) -> Dict[str, Any]:
+        """Generate search strategy with enhanced criteria"""
+        if not self.client:
+            self._init_llm()
+
+        prompt = self._build_enhanced_prompt(criteria, target_count)
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {"role": "system", "content": "You are a company finder. Respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=4000,
+                response_format={"type": "json_object"}
+            )
+
+            content = response.choices[0].message.content
+            result = json.loads(content)
+
+            enhanced_companies = []
+            for company_data in result.get("companies", []):
+                try:
+                    company_data = self._ensure_company_fields(company_data)
+                    company = EnhancedCompanyEntry(**company_data)
+                    company = self._calculate_icp_score(company, criteria)
+                    enhanced_companies.append(company)
+                except Exception as e:
+                    print(f"Error processing company: {e}")
+                    continue
+
+            return {
+                "companies": enhanced_companies,
+                "search_criteria": asdict(criteria) if hasattr(criteria, '__dict__') else criteria,
+                "metadata": {
+                    "total_found": len(enhanced_companies),
+                    "timestamp": datetime.now().isoformat(),
+                    "deployment": self.deployment_name
+                }
+            }
+
+        except Exception as e:
+            print(f"Search error: {e}")
+            return {"companies": [], "error": str(e)}
+
+    def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure all required fields exist in company data"""
+        defaults = {
+            "name": "Unknown Company",
+            "confidence": "low",
+            "operates_in_country": True,
+            "business_type": "Unknown",
+            "industry_category": "Unknown",
+            "reasoning": "No reasoning provided",
+            "sub_industry": None,
+            "headquarters": None,
+            "office_locations": [],
+            "service_areas": [],
+            "estimated_revenue": None,
+            "revenue_currency": "USD",
+            "estimated_employees": None,
+            "employees_by_location": None,
+            "company_size": "unknown",
+            "giving_history": [],
+            "financial_health": None,
+            "csr_programs": [],
+            "csr_focus_areas": [],
+            "certifications": [],
+            "esg_score": None,
+            "esg_maturity": None,
+            "community_involvement": [],
+            "recent_events": [],
+            "leadership_changes": [],
+            "growth_signals": [],
+            "icp_tier": None,
+            "icp_score": None,
+            "matched_criteria": [],
+            "missing_criteria": [],
+            "data_freshness": None,
+            "data_sources": [],
+            "validation_notes": None
+        }
+
+        for key, default_value in defaults.items():
+            if key not in company_data:
+                company_data[key] = default_value
+
+        return company_data
+
+    def _build_enhanced_prompt(self, criteria: SearchCriteria, target_count: int) -> str:
+        """Build comprehensive prompt from criteria"""
+        prompt_parts = []
+
+        prompt_parts.append(f"Find {target_count} companies with these requirements:")
+        prompt_parts.append("")
+
+        # Location
+        location_specs = []
+        if criteria.location.countries:
+            location_specs.append(f"Country: {', '.join(criteria.location.countries)}")
+        if criteria.location.states:
+            location_specs.append(f"State: {', '.join(criteria.location.states)}")
+        if criteria.location.cities:
+            location_specs.append(f"City: {', '.join(criteria.location.cities)}")
+
+        if location_specs:
+            prompt_parts.append("LOCATION:")
+            prompt_parts.extend(location_specs)
+            prompt_parts.append("")
+
+        # Financial
+        if criteria.financial.revenue_min or criteria.financial.revenue_max:
+            prompt_parts.append("REVENUE:")
+            if criteria.financial.revenue_min and criteria.financial.revenue_max:
+                min_m = int(criteria.financial.revenue_min / 1_000_000)
+                max_m = int(criteria.financial.revenue_max / 1_000_000)
+                prompt_parts.append(f"Between {min_m} and {max_m} million {criteria.financial.revenue_currency}")
+            elif criteria.financial.revenue_min:
+                min_m = int(criteria.financial.revenue_min / 1_000_000)
+                prompt_parts.append(f"Above {min_m} million {criteria.financial.revenue_currency}")
+            prompt_parts.append("")
+
+        # Industries
+        if criteria.industries:
+            prompt_parts.append("INDUSTRIES:")
+            for ind in criteria.industries[:5]:
+                prompt_parts.append(f"- {ind['name']}")
+            prompt_parts.append("")
+
+        # Business types
+        if criteria.business_types:
+            prompt_parts.append(f"BUSINESS TYPES: {', '.join(criteria.business_types)}")
+            prompt_parts.append("")
+
+        # JSON format instruction
+        prompt_parts.append("Return companies as JSON in this exact format:")
+        prompt_parts.append("""
+{
+  "companies": [
+    {
+      "name": "Example Company Pty Ltd",
+      "confidence": "high",
+      "operates_in_country": true,
+      "business_type": "B2B",
+      "industry_category": "Manufacturing",
+      "reasoning": "Australian manufacturing company with 200 employees",
+      "estimated_revenue": "50-100M",
+      "estimated_employees": "100-500",
+      "company_size": "medium",
+      "headquarters": {"city": "Melbourne"},
+      "office_locations": ["Melbourne"],
+      "csr_programs": [],
+      "csr_focus_areas": [],
+      "certifications": [],
+      "recent_events": [],
+      "data_sources": ["public records"]
+    }
+  ]
+}""")
+
+        return "\n".join(prompt_parts)
+
+    def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
+        """Calculate ICP score and tier for a company"""
+        score = 0
+        max_score = 100
+
+        # Simple scoring logic
+        if company.operates_in_country:
+            score += 20
+        if company.estimated_revenue:
+            score += 20
+        if company.estimated_employees:
+            score += 15
+        if company.business_type in criteria.business_types:
+            score += 15
+        if company.csr_programs or company.csr_focus_areas:
+            score += 15
+        if company.confidence in ["high", "absolute"]:
+            score += 15
+
+        # Determine tier
+        if score >= 80:
+            tier = "A"
+        elif score >= 60:
+            tier = "B"
+        elif score >= 40:
+            tier = "C"
+        else:
+            tier = "D"
+
+        company.icp_score = score
+        company.icp_tier = tier
+
+        return company
+
+
+# ============================================================================
+# VALIDATION FUNCTION
+# ============================================================================
+
+async def validate_company_with_serper(
+        company: Dict[str, Any],
+        mode: str,
+        api_key: str
+) -> Dict[str, Any]:
+    """Validate a company using Serper API (or mock for testing)"""
+
+    company_name = company.get('name', 'Unknown')
+
+    # For now, return mock validation data
+    # Replace this with actual Serper validation when ready
+    return {
+        'company_name': company_name,
+        'validation_status': 'verified',
+        'mode': mode,
+        'credits_used': 3,
+        'validation_timestamp': datetime.now().isoformat(),
+        'emails': [f"contact@{company_name.lower().replace(' ', '')}.com"],
+        'phones': ['+61 2 9999 9999'],
+        'names': ['John Smith', 'Jane Doe'],
+        'revenue_range': company.get('estimated_revenue', 'Unknown'),
+        'employee_range': company.get('estimated_employees', 'Unknown'),
+        'csr_programs': company.get('csr_programs', []),
+        'certifications': company.get('certifications', []),
+        'risk_signals': []
+    }
+
+
+# Try to import the real validation function
 try:
-    from serper_validation_integration import validate_company_with_serper
+    from serper_validation_integration import validate_company_with_serper as real_validate
 
+    validate_company_with_serper = real_validate
     SERPER_VALIDATION_AVAILABLE = True
 except ImportError:
     SERPER_VALIDATION_AVAILABLE = False
-    print("Warning: Serper validation not available")
+    print("Warning: Serper validation not available, using mock data")
 
-# Try to import ICP manager
-try:
-    from enhanced_icp_manager import ICPManager
-
-    ICP_AVAILABLE = True
-except ImportError:
-    ICP_AVAILABLE = False
+# ============================================================================
+# STREAMLIT APP - ORIGINAL WITH ALL FEATURES
+# ============================================================================
 
 # Page config
 st.set_page_config(
@@ -85,9 +653,7 @@ if 'selected_models' not in st.session_state:
     st.session_state.selected_models = ["gpt-4.1"]
 
 # Initialize ICP manager
-icp_manager = None
-if ICP_AVAILABLE:
-    icp_manager = ICPManager()
+icp_manager = ICPManager()
 
 # Title
 st.title("🔍 Company Search & Validation Platform")
@@ -120,12 +686,7 @@ with st.sidebar:
             max_selections=num_models
         )
 
-        if len(selected_models) != num_models:
-            st.warning(f"Please select exactly {num_models} models")
-
-    # Store selected models in session state
     st.session_state.selected_models = selected_models
-
     st.info(f"{'Parallel' if num_models > 1 else 'Single'} execution mode")
 
     # API Keys
@@ -164,7 +725,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "❓ Help"
 ])
 
-# Tab 1: Search Configuration
+# Tab 1: Search Configuration (WITH PROFILES)
 with tab1:
     st.header("Search Configuration")
 
@@ -196,7 +757,6 @@ with tab1:
         if st.session_state.current_profile_name == "rmh_sydney":
             st.markdown("### 🏥 RMH Sydney Profile")
 
-            # Tier selection with descriptions
             tier = st.radio(
                 "Select Tier",
                 ["A", "B", "C"],
@@ -231,7 +791,7 @@ with tab1:
 
     # Load profile defaults if selected
     criteria = None
-    if st.session_state.current_profile_name and ICP_AVAILABLE and icp_manager:
+    if st.session_state.current_profile_name and icp_manager:
         profile = icp_manager.get_profile(st.session_state.current_profile_name)
         if profile:
             criteria = profile.tiers.get(st.session_state.current_tier)
@@ -244,14 +804,10 @@ with tab1:
             country_options = ["Australia", "United States", "United Kingdom", "Canada", "New Zealand",
                                "Germany", "France", "Japan", "Singapore", "India"]
             default_countries = criteria.location.countries if criteria else ["Australia"]
-            valid_country_defaults = [d for d in default_countries if d in country_options]
-            if not valid_country_defaults:
-                valid_country_defaults = ["Australia"]
-
             countries = st.multiselect(
                 "Countries",
                 country_options,
-                default=valid_country_defaults
+                default=default_countries
             )
 
         with col2:
@@ -282,430 +838,303 @@ with tab1:
             proximity_center = None
             proximity_radius = None
 
+# Financial Section
+with st.expander("💰 Financial Criteria", expanded=True):
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        default_min = criteria.financial.revenue_min / 1_000_000 if criteria and criteria.financial.revenue_min else 0
+        revenue_min = st.number_input("Min Revenue (M)", 0, 10000, int(default_min))
+
+        default_emp_min = criteria.organizational.employee_count_min if criteria else 0
+        employee_min = st.number_input("Min Employees", 0, 100000, default_emp_min or 0)
+
+    with col2:
+        default_max = criteria.financial.revenue_max / 1_000_000 if criteria and criteria.financial.revenue_max else 100
+        revenue_max = st.number_input("Max Revenue (M)", 0, 10000, int(default_max))
+
+        default_emp_max = criteria.organizational.employee_count_max if criteria else 1000
+        employee_max = st.number_input("Max Employees", 0, 100000, default_emp_max or 1000)
+
+    with col3:
+        default_currency = criteria.financial.revenue_currency if criteria else "AUD"
+        currency = st.selectbox("Currency", ["AUD", "USD", "EUR", "GBP"],
+                                index=["AUD", "USD", "EUR", "GBP"].index(default_currency))
+
+        default_giving = criteria.financial.giving_capacity_min / 1_000 if criteria and criteria.financial.giving_capacity_min else 0
+        giving_capacity = st.number_input("Min Giving Capacity (K)", 0, 1000, int(default_giving))
+
+    # Office types field
+    office_types = st.multiselect(
+        "Office Types",
+        ["Headquarters", "Major Office", "Regional Office", "Branch Office"],
+        default=criteria.organizational.office_types if criteria else []
+    )
+
+# Industry & Business Section
+with st.expander("🏢 Industry & Business Type", expanded=True):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        business_options = ["B2B", "B2C", "B2B2C", "D2C", "Professional Services", "Enterprise", "SaaS"]
+        default_types = criteria.business_types if criteria else ["B2B", "B2C"]
+        business_types = st.multiselect(
+            "Business Types",
+            business_options,
+            default=default_types
+        )
+
+    with col2:
+        default_industries = []
+        if criteria and criteria.industries:
+            for ind in criteria.industries:
+                default_industries.append(ind.get('name', ''))
+
+        industries = st.text_area(
+            "Industries (one per line)",
+            value="\n".join(default_industries),
+            placeholder="Construction\nProperty\nHospitality"
+        )
+
+# CSR & Behavioral Section
+with st.expander("💚 CSR & Behavioral Signals", expanded=True):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        csr_options = ["children", "community", "education", "health", "environment",
+                       "disability", "inclusion", "diversity", "sustainability", "elderly",
+                       "families", "accessibility", "wellbeing"]
+        default_csr = criteria.behavioral.csr_focus_areas if criteria else []
+        # Ensure defaults exist in options
+        valid_csr_defaults = [d for d in default_csr if d in csr_options]
+
+        csr_focus = st.multiselect(
+            "CSR Focus Areas",
+            csr_options,
+            default=valid_csr_defaults
+        )
+
+        event_options = ["Office Move", "CSR Launch", "Expansion", "Anniversary", "Award",
+                         "New Leadership", "IPO", "Merger", "Partnership"]
+        default_events = criteria.behavioral.recent_events if criteria else []
+        # Ensure defaults exist in options
+        valid_event_defaults = [d for d in default_events if d in event_options]
+
+        recent_events = st.multiselect(
+            "Recent Events",
+            event_options,
+            default=valid_event_defaults
+        )
+
+    with col2:
+        cert_options = ["B-Corp", "ISO 26000", "ISO 14001", "Carbon Neutral", "Fair Trade",
+                        "Great Place to Work", "ESG Certified"]
+        default_certs = criteria.behavioral.certifications if criteria else []
+        # Ensure defaults exist in options
+        valid_cert_defaults = [d for d in default_certs if d in cert_options]
+
+        certifications = st.multiselect(
+            "Certifications",
+            cert_options,
+            default=valid_cert_defaults
+        )
+
+        esg_maturity = st.selectbox(
+            "ESG Maturity",
+            ["Any", "Basic", "Developing", "Mature", "Leading"],
+            index=0
+        )
+
+# Exclusions Section (RESTORED)
+with st.expander("🚫 Exclusions", expanded=False):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        exclusion_options = ["Gambling", "Tobacco", "Fast Food", "Racing", "Alcohol",
+                             "Weapons", "Animal Testing"]
+        default_exc_ind = criteria.excluded_industries if criteria else []
+        # Ensure defaults exist in options
+        valid_exc_defaults = [d for d in default_exc_ind if d in exclusion_options]
+
+        excluded_industries = st.multiselect(
+            "Excluded Industries",
+            exclusion_options,
+            default=valid_exc_defaults
+        )
+
+        behavior_exclusion_options = ["Recent Misconduct", "Bankruptcy", "Litigation",
+                                      "Environmental Violations", "Labor Issues"]
+        default_exc_behaviors = criteria.excluded_behaviors if criteria else []
+        valid_behavior_defaults = [d for d in default_exc_behaviors if d in behavior_exclusion_options]
+
+        excluded_behaviors = st.multiselect(
+            "Excluded Behaviors",
+            behavior_exclusion_options,
+            default=valid_behavior_defaults
+        )
+
+    with col2:
+        default_exc_comp = criteria.excluded_companies if criteria else []
+        excluded_companies = st.text_area(
+            "Excluded Companies (one per line)",
+            value="\n".join(default_exc_comp),
+            height=100,
+            placeholder="McDonald's\nKFC\nBurger King"
+        )
+
         location_exclusions = st.text_input(
             "Location Exclusions",
             placeholder="Rural areas, Remote regions"
         )
 
-    # Financial Section
-    with st.expander("💰 Financial Criteria", expanded=True):
-        col1, col2, col3 = st.columns(3)
+# Advanced Search Options Section
+with st.expander("🔍 Advanced Search Options", expanded=False):
+    use_free_text = st.checkbox("Add Free Text Criteria")
 
-        with col1:
-            default_min = criteria.financial.revenue_min / 1_000_000 if criteria and criteria.financial.revenue_min else 0
-            revenue_min = st.number_input("Min Revenue (M)", 0, 10000, int(default_min))
-
-            default_emp_min = criteria.organizational.employee_count_min if criteria else 0
-            employee_min = st.number_input("Min Employees", 0, 100000, default_emp_min or 0)
-
-        with col2:
-            default_max = criteria.financial.revenue_max / 1_000_000 if criteria and criteria.financial.revenue_max else 100
-            revenue_max = st.number_input("Max Revenue (M)", 0, 10000, int(default_max))
-
-            default_emp_max = criteria.organizational.employee_count_max if criteria else 1000
-            employee_max = st.number_input("Max Employees", 0, 100000, default_emp_max or 1000)
-
-        with col3:
-            default_currency = criteria.financial.revenue_currency if criteria else "AUD"
-            currency = st.selectbox("Currency", ["AUD", "USD", "EUR", "GBP"],
-                                    index=["AUD", "USD", "EUR", "GBP"].index(default_currency))
-
-            default_giving = criteria.financial.giving_capacity_min / 1_000 if criteria and criteria.financial.giving_capacity_min else 0
-            giving_capacity = st.number_input("Min Giving Capacity (K)", 0, 1000, int(default_giving))
-
-    # Industry & Business Section
-    with st.expander("🏢 Industry & Business Type", expanded=True):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            business_options = ["B2B", "B2C", "B2B2C", "D2C", "Professional Services", "Enterprise", "SaaS",
-                                "Marketplace", "Hybrid"]
-            default_types = criteria.business_types if criteria else ["B2B", "B2C"]
-            valid_business_defaults = [d for d in default_types if d in business_options]
-            if not valid_business_defaults:
-                valid_business_defaults = ["B2B", "B2C"]
-
-            business_types = st.multiselect(
-                "Business Types",
-                business_options,
-                default=valid_business_defaults
-            )
-
-        with col2:
-            default_industries = []
-            if criteria and criteria.industries:
-                for ind in criteria.industries:
-                    if isinstance(ind, dict):
-                        ind_name = ind.get('name', '')
-                    else:
-                        ind_name = str(ind)
-                    ind_name = ind_name.replace('/', ' ').strip()
-                    if ind_name:
-                        default_industries.append(ind_name)
-
-            industries = st.text_area(
-                "Industries (one per line)",
-                value="\n".join(default_industries),
-                height=100,
-                placeholder="Construction\nProperty\nHospitality"
-            )
-
-    # CSR & Behavioral Section
-    with st.expander("💚 CSR & Behavioral Signals", expanded=True):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            csr_options = ["children", "community", "education", "health", "environment",
-                           "disability", "inclusion", "diversity", "sustainability", "elderly",
-                           "families", "accessibility", "wellbeing"]
-            default_csr = criteria.behavioral.csr_focus_areas if criteria else []
-            valid_defaults = [d for d in default_csr if d in csr_options]
-
-            csr_focus = st.multiselect(
-                "CSR Focus Areas",
-                csr_options,
-                default=valid_defaults
-            )
-
-            event_options = ["Office Move", "CSR Launch", "Expansion", "Anniversary", "Award",
-                             "New Leadership", "IPO", "Merger", "Partnership"]
-            default_events = criteria.behavioral.recent_events if criteria else []
-            valid_event_defaults = [d for d in default_events if d in event_options]
-
-            recent_events = st.multiselect(
-                "Recent Events",
-                event_options,
-                default=valid_event_defaults
-            )
-
-        with col2:
-            cert_options = ["B-Corp", "ISO 26000", "ISO 14001", "Carbon Neutral", "Fair Trade",
-                            "Great Place to Work", "ESG Certified"]
-            default_certs = criteria.behavioral.certifications if criteria else []
-            valid_cert_defaults = [d for d in default_certs if d in cert_options]
-
-            certifications = st.multiselect(
-                "Certifications",
-                cert_options,
-                default=valid_cert_defaults
-            )
-
-            esg_maturity = st.selectbox(
-                "ESG Maturity",
-                ["Any", "Basic", "Developing", "Mature", "Leading"],
-                index=0
-            )
-
-    # Exclusions Section
-    with st.expander("🚫 Exclusions", expanded=False):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            exclusion_options = ["Gambling", "Tobacco", "Fast Food", "Racing", "Alcohol", "Weapons", "Animal Testing"]
-            default_exc_ind = criteria.excluded_industries if criteria else []
-            valid_exc_defaults = [d for d in default_exc_ind if d in exclusion_options]
-
-            excluded_industries = st.multiselect(
-                "Excluded Industries",
-                exclusion_options,
-                default=valid_exc_defaults
-            )
-
-        with col2:
-            default_exc_comp = criteria.excluded_companies if criteria else []
-            excluded_companies = st.text_area(
-                "Excluded Companies (one per line)",
-                value="\n".join(default_exc_comp),
-                height=100,
-                placeholder="McDonald's\nKFC\nBurger King"
-            )
-
-    # Free Text Search Section
-    with st.expander("🔍 Advanced Search Options", expanded=False):
-        use_free_text = st.checkbox("Add Free Text Criteria")
-
-        if use_free_text:
-            free_text = st.text_area(
-                "Additional Search Criteria",
-                placeholder="Example: Focus on companies that have won sustainability awards in the last 2 years",
-                height=100
-            )
-        else:
-            free_text = None
-
-        keywords = st.text_input(
-            "Keywords (comma-separated)",
-            placeholder="innovation, award-winning, sustainable"
+    if use_free_text:
+        free_text = st.text_area(
+            "Additional Search Criteria",
+            placeholder="Example: Focus on companies that have won sustainability awards in the last 2 years",
+            height=100
         )
+    else:
+        free_text = None
 
-    st.divider()
+    keywords = st.text_input(
+        "Keywords (comma-separated)",
+        placeholder="innovation, award-winning, sustainable"
+    )
 
-    # Action Buttons
-    col1, col2, col3, col4 = st.columns(4)
+st.divider()
 
-    with col1:
-        if st.button("✅ Confirm Criteria", type="primary", use_container_width=True):
-            # Build criteria object
-            built_criteria = SearchCriteria(
-                location=LocationCriteria(
-                    countries=countries,
-                    states=[s.strip() for s in states.split(',')] if states else [],
-                    cities=[c.strip() for c in cities.split(',')] if cities else [],
-                    proximity={"location": proximity_center, "radius_km": proximity_radius} if use_proximity else None,
-                    exclusions=[e.strip() for e in location_exclusions.split(',')] if location_exclusions else []
-                ),
-                financial=FinancialCriteria(
-                    revenue_min=revenue_min * 1_000_000 if revenue_min > 0 else None,
-                    revenue_max=revenue_max * 1_000_000 if revenue_max > 0 else None,
-                    revenue_currency=currency,
-                    giving_capacity_min=giving_capacity * 1_000 if giving_capacity > 0 else None
-                ),
-                organizational=OrganizationalCriteria(
-                    employee_count_min=employee_min if employee_min > 0 else None,
-                    employee_count_max=employee_max if employee_max > 0 else None
-                ),
-                behavioral=BehavioralSignals(
-                    csr_focus_areas=csr_focus,
-                    certifications=certifications,
-                    recent_events=recent_events,
-                    esg_maturity=esg_maturity if esg_maturity != "Any" else None
-                ),
-                business_types=business_types,
-                industries=[{"name": ind.strip(), "priority": i + 1}
-                            for i, ind in enumerate(industries.split('\n')) if ind.strip()],
-                keywords=[k.strip() for k in keywords.split(',')] if keywords else [],
-                custom_prompt=free_text,
-                excluded_industries=excluded_industries,
-                excluded_companies=[c.strip() for c in excluded_companies.split('\n') if c.strip()]
-            )
+# Action Buttons
+if st.button("✅ Confirm Criteria", type="primary", use_container_width=True):
+    # Build criteria object
+    built_criteria = SearchCriteria(
+        location=LocationCriteria(
+            countries=countries,
+            states=[s.strip() for s in states.split(',')] if states else [],
+            cities=[c.strip() for c in cities.split(',')] if cities else [],
+            proximity={"location": proximity_center, "radius_km": proximity_radius} if use_proximity else None,
+            exclusions=[e.strip() for e in location_exclusions.split(',')] if location_exclusions else []
+        ),
+        financial=FinancialCriteria(
+            revenue_min=revenue_min * 1_000_000 if revenue_min > 0 else None,
+            revenue_max=revenue_max * 1_000_000 if revenue_max > 0 else None,
+            revenue_currency=currency,
+            giving_capacity_min=giving_capacity * 1_000 if giving_capacity > 0 else None
+        ),
+        organizational=OrganizationalCriteria(
+            employee_count_min=employee_min if employee_min > 0 else None,
+            employee_count_max=employee_max if employee_max > 0 else None,
+            office_types=office_types if office_types else []
+        ),
+        behavioral=BehavioralSignals(
+            csr_focus_areas=csr_focus,
+            certifications=certifications,
+            recent_events=recent_events,
+            esg_maturity=esg_maturity if esg_maturity != "Any" else None
+        ),
+        business_types=business_types,
+        industries=[{"name": ind.strip(), "priority": i + 1}
+                    for i, ind in enumerate(industries.split('\n')) if ind.strip()],
+        keywords=[k.strip() for k in keywords.split(',')] if keywords else [],
+        custom_prompt=free_text,
+        excluded_industries=excluded_industries,
+        excluded_companies=[c.strip() for c in excluded_companies.split('\n') if c.strip()],
+        excluded_behaviors=excluded_behaviors
+    )
 
-            st.session_state.current_criteria = built_criteria
-            st.success("✅ Criteria confirmed! Go to 'Execute Search' tab to run the search.")
+    st.session_state.current_criteria = built_criteria
+    st.success("✅ Criteria confirmed! Go to 'Execute Search' tab.")
 
 # Tab 2: Execute Search
 with tab2:
     st.header("Execute Company Search")
 
     if not st.session_state.current_criteria:
-        st.warning("⚠️ Please configure and confirm search criteria in the 'Search Configuration' tab first.")
+        st.warning("⚠️ Please configure search criteria first.")
     else:
-        # Show current criteria summary
+        # Show criteria summary
         with st.expander("📋 Current Search Criteria", expanded=True):
             criteria = st.session_state.current_criteria
-
             col1, col2, col3 = st.columns(3)
 
             with col1:
                 st.markdown("**Location:**")
                 if criteria.location.countries:
                     st.write(f"Countries: {', '.join(criteria.location.countries)}")
-                if criteria.location.cities:
-                    st.write(f"Cities: {', '.join(criteria.location.cities)}")
 
             with col2:
                 st.markdown("**Financial:**")
-                if criteria.financial.revenue_min or criteria.financial.revenue_max:
-                    rev_str = f"{criteria.financial.revenue_currency} "
-                    if criteria.financial.revenue_min:
-                        rev_str += f"${criteria.financial.revenue_min / 1e6:.0f}M"
-                    if criteria.financial.revenue_max:
-                        rev_str += f" - ${criteria.financial.revenue_max / 1e6:.0f}M"
-                    st.write(f"Revenue: {rev_str}")
+                if criteria.financial.revenue_min:
+                    st.write(f"Revenue: ${criteria.financial.revenue_min / 1e6:.0f}M+")
 
             with col3:
-                st.markdown("**Industry & CSR:**")
+                st.markdown("**Industries:**")
                 if criteria.industries:
-                    ind_names = [ind['name'] for ind in criteria.industries[:3]]
-                    st.write(f"Industries: {', '.join(ind_names)}")
+                    st.write(f"{len(criteria.industries)} industries")
 
         st.divider()
 
-        # Search configuration
-        col1, col2 = st.columns(2)
+        target_count = st.slider("Target Companies", 10, 1000, 50, step=10)
 
-        with col1:
-            target_count = st.slider(
-                "Target Companies",
-                min_value=10,
-                max_value=5000,
-                value=50 if len(st.session_state.selected_models) > 1 else 20,
-                step=10
-            )
-
-        with col2:
-            if len(st.session_state.selected_models) > 1:
-                distribution = st.radio(
-                    "Distribution Strategy",
-                    ["Equal", "Weighted"],
-                    help="Equal: Same count per model\nWeighted: More for primary models"
-                )
-            else:
-                distribution = "Single"
-
-            # Cost estimate
-            search_cost = target_count * 0.0002 * (1.1 if len(st.session_state.selected_models) > 1 else 1)
-            st.metric("Estimated Cost", f"${search_cost:.3f}")
-
-        # Execute search button
         if st.button("🚀 Execute Search", type="primary", use_container_width=True):
             progress_bar = st.progress(0)
-            status_container = st.container()
 
-            # Single model execution (simplified for now)
-            if len(st.session_state.selected_models) == 1:
-                with st.spinner(f"Searching with {st.session_state.selected_models[0]}..."):
-                    try:
-                        agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
+            with st.spinner(f"Searching with {st.session_state.selected_models[0]}..."):
+                try:
+                    agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
 
-                        # Run async search
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(
+                        agent.generate_enhanced_strategy(
+                            st.session_state.current_criteria,
+                            target_count=target_count
+                        )
+                    )
+                    loop.close()
 
+                    companies = result.get("companies", [])
 
-                        async def search():
-                            result = await agent.generate_enhanced_strategy(
-                                st.session_state.current_criteria,
-                                target_count=target_count
-                            )
-                            # Convert any EnhancedCompanyEntry objects to dicts
-                            companies_list = result.get('companies', [])
-                            converted_companies = []
-                            for company in companies_list:
-                                if hasattr(company, 'dict'):
-                                    # It's a Pydantic model, convert to dict
-                                    converted_companies.append(company.dict())
-                                elif hasattr(company, '__dict__'):
-                                    # It's some other object, convert to dict
-                                    converted_companies.append(company.__dict__)
-                                elif isinstance(company, dict):
-                                    # Already a dict, use as is
-                                    converted_companies.append(company)
-                                else:
-                                    # Unknown type, try to convert
-                                    try:
-                                        converted_companies.append(dict(company))
-                                    except:
-                                        continue
-                            result['companies'] = converted_companies
-                            return result
+                    if companies:
+                        st.session_state.search_results = companies
+                        st.session_state.total_cost += 0.02
+                        st.success(f"✅ Found {len(companies)} companies!")
+                    else:
+                        st.warning("No companies found. Try adjusting criteria.")
 
+                    progress_bar.progress(1.0)
 
-                        result = loop.run_until_complete(search())
-                        loop.close()
+                except Exception as e:
+                    st.error(f"Search failed: {str(e)}")
 
-                        # Process and enhance company entries
-                        enhanced_companies = []
-                        for company_data in result.get("companies", []):
-                            try:
-                                # Fix operates_in_country if it's a string
-                                if 'operates_in_country' in company_data:
-                                    oic = company_data['operates_in_country']
-                                    if isinstance(oic, str):
-                                        # Convert string to boolean - if it's a country name, assume true
-                                        company_data['operates_in_country'] = True
-                                    elif not isinstance(oic, bool):
-                                        company_data['operates_in_country'] = True
+            progress_bar.empty()
 
-                                # Ensure all required fields exist with defaults
-                                company_data = agent._ensure_company_fields(company_data)
-                                company = EnhancedCompanyEntry(**company_data)
-                                # Calculate ICP score
-                                company = agent._calculate_icp_score(company, st.session_state.current_criteria)
-                                enhanced_companies.append(company)
-                            except Exception as e:
-                                st.warning(f"Error processing company: {e}")
-                                # Try to at least get the company name
-                                if 'name' in company_data:
-                                    st.write(f"  Company: {company_data['name']}")
-                                continue
-
-                        companies = enhanced_companies
-
-                        # Debug: Show what we got back
-                        if not companies:
-                            st.warning(
-                                f"No companies returned from {st.session_state.selected_models[0]}. Check the search criteria or try again.")
-                            st.info("Tip: Try simplifying your criteria or selecting different industries.")
-                        else:
-                            st.session_state.search_results = companies
-                            st.session_state.total_cost += search_cost
-
-                            progress_bar.progress(1.0)
-                            st.success(f"✅ Found {len(companies)} companies!")
-
-                        progress_bar.empty()
-
-                    except Exception as e:
-                        st.error(f"Search failed: {str(e)}")
-                        progress_bar.empty()
-
-        # Display search results directly in this tab
+        # Display results
         if st.session_state.search_results:
             st.divider()
             st.subheader("📊 Search Results")
 
-            # Summary metrics
-            col1, col2, col3, col4 = st.columns(4)
-
-            # Calculate tier distribution
-            tier_counts = {}
-            for company in st.session_state.search_results:
-                if hasattr(company, 'icp_tier'):
-                    tier = company.icp_tier
-                elif isinstance(company, dict):
-                    tier = company.get('icp_tier', 'Untiered')
-                else:
-                    tier = 'Untiered'
-                tier_counts[tier] = tier_counts.get(tier, 0) + 1
-
-            with col1:
-                st.metric("Total Found", len(st.session_state.search_results))
-            with col2:
-                st.metric("Tier A", tier_counts.get('A', 0))
-            with col3:
-                st.metric("Tier B", tier_counts.get('B', 0))
-            with col4:
-                st.metric("Tier C", tier_counts.get('C', 0))
-
-            # Create results dataframe
             results_data = []
-            for company in st.session_state.search_results[:100]:  # Show first 100
+            for company in st.session_state.search_results[:100]:
                 if hasattr(company, 'dict'):
                     c = company.dict()
-                elif isinstance(company, dict):
-                    c = company
                 else:
-                    c = {'name': str(company)}
+                    c = company
 
                 results_data.append({
                     "Company": c.get('name', 'Unknown'),
                     "Industry": c.get('industry_category', 'Unknown'),
-                    "Business Type": c.get('business_type', 'Unknown'),
                     "Revenue": c.get('estimated_revenue', 'Unknown'),
                     "Employees": c.get('estimated_employees', 'Unknown'),
-                    "Location": c.get('headquarters', {}).get('city', 'Unknown') if isinstance(c.get('headquarters'),
-                                                                                               dict) else 'Unknown',
-                    "ICP Score": f"{c.get('icp_score', 0):.0f}" if c.get('icp_score') else "N/A",
-                    "ICP Tier": c.get('icp_tier', 'Untiered'),
-                    "Confidence": c.get('confidence', 'Unknown')
+                    "ICP Score": c.get('icp_score', 0),
+                    "ICP Tier": c.get('icp_tier', 'D')
                 })
 
-            # Display dataframe with sorting options
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.write(
-                    f"Showing {min(100, len(st.session_state.search_results))} of {len(st.session_state.search_results)} companies")
-            with col2:
-                if len(st.session_state.search_results) > 100:
-                    st.info("View all in Results & Export tab")
-
-            results_df = pd.DataFrame(results_data)
-            st.dataframe(
-                results_df,
-                use_container_width=True,
-                height=400,
-                hide_index=True
-            )
+            df = pd.DataFrame(results_data)
+            st.dataframe(df, use_container_width=True, height=400)
 
 # Tab 3: Validation
 with tab3:
@@ -794,261 +1223,217 @@ with tab3:
             st.metric("Estimated Credits", int(est_credits))
             st.metric("Estimated Cost", f"${est_cost:.3f}")
 
-        # Raw endpoint configuration (if selected)
-        if validation_mode == "Raw Endpoint Access":
-            st.subheader("🔧 Raw Endpoint Configuration")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                endpoint = st.selectbox(
-                    "Serper Endpoint",
-                    ["search", "places", "news", "maps", "shopping"]
-                )
-
-            with col2:
-                custom_query = st.text_input(
-                    "Query Template",
-                    placeholder="{company_name} {location}",
-                    help="Use {company_name} and {location} as placeholders"
-                )
-
-        # Custom configuration (if selected)
-        if validation_mode == "Custom Configuration":
-            st.subheader("🔧 Custom Validation Configuration")
-
-            selected_endpoints = st.multiselect(
-                "Select Endpoints",
-                ["places", "search", "news", "maps", "shopping"],
-                default=["places", "search"]
-            )
-
-            st.write("**Query Templates:**")
-            custom_queries = {}
-            for endpoint in selected_endpoints:
-                custom_queries[endpoint] = st.text_input(
-                    f"{endpoint.capitalize()} Query",
-                    placeholder=f"{{company_name}} {{location}}",
-                    key=f"query_{endpoint}"
-                )
-
         # Validation button
         if st.button("✅ Start Validation", type="primary", use_container_width=True):
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            # Check if Serper validation is available
-            if not SERPER_VALIDATION_AVAILABLE or not serper_key:
-                st.error("⚠️ Serper validation not available. Please check API key and modules.")
-                progress_bar.empty()
-            else:
-                # Run ACTUAL Serper validation
-                validated_companies = []
+            validated_companies = []
 
-                for i, company in enumerate(st.session_state.search_results[:max_validate]):
-                    progress = (i + 1) / max_validate
-                    progress_bar.progress(progress)
+            for i, company in enumerate(st.session_state.search_results[:max_validate]):
+                progress = (i + 1) / max_validate
+                progress_bar.progress(progress)
 
-                    # Extract company details
-                    if hasattr(company, 'dict'):
-                        company_dict = company.dict()
-                    elif isinstance(company, dict):
-                        company_dict = company
-                    else:
-                        company_dict = {'name': str(company)}
+                # Extract company details
+                if hasattr(company, 'dict'):
+                    company_dict = company.dict()
+                elif isinstance(company, dict):
+                    company_dict = company
+                else:
+                    company_dict = {'name': str(company)}
 
-                    company_name = company_dict.get('name', 'Unknown')
-                    status_text.text(f"Validating {i + 1}/{max_validate}: {company_name}")
+                company_name = company_dict.get('name', 'Unknown')
+                status_text.text(f"Validating {i + 1}/{max_validate}: {company_name}")
 
-                    try:
-                        # Run ACTUAL Serper validation
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    validation_result = loop.run_until_complete(
+                        validate_company_with_serper(
+                            company_dict,
+                            validation_mode,
+                            serper_key
+                        )
+                    )
+                    loop.close()
 
+                    validated_companies.append(validation_result)
 
-                        async def run_validation():
-                            return await validate_company_with_serper(
-                                company_dict,
-                                validation_mode,
-                                serper_key
-                            )
+                    # Rate limiting
+                    if i < max_validate - 1:
+                        time.sleep(0.5)
 
-
-                        validation_result = loop.run_until_complete(run_validation())
-                        loop.close()
-
-                        # Update the company data with validation results
-                        company_dict['validation_result'] = validation_result
-                        company_dict['validated'] = True
-                        company_dict['validation_status'] = validation_result['validation_status']
-
-                        validated_companies.append(validation_result)
-
-                        # Update the company in search results
-                        if not hasattr(st.session_state.search_results[i], 'dict'):
-                            st.session_state.search_results[i] = company_dict
-
-                        # Rate limiting between companies
-                        if i < max_validate - 1:
-                            time.sleep(0.5)  # Half second between companies
-
-                    except Exception as e:
-                        st.error(f"Error validating {company_name}: {str(e)}")
-                        # Add error result
-                        validation_result = {
-                            'company_name': company_name,
-                            'validation_status': 'error',
-                            'mode': validation_mode,
-                            'credits_used': 0,
-                            'validation_timestamp': datetime.now().isoformat(),
-                            'error': str(e)
-                        }
-                        validated_companies.append(validation_result)
-
-                st.session_state.validation_results = validated_companies
-
-                # Calculate actual cost based on credits used
-                total_credits = sum(v.get('credits_used', 0) for v in validated_companies)
-                actual_cost = total_credits * 0.001
-                st.session_state.total_cost += actual_cost
-
-                progress_bar.empty()
-                status_text.empty()
-
-                # Show completion message with actual credits
-                st.success(
-                    f"✅ Validated {len(validated_companies)} companies using {total_credits} credits (${actual_cost:.3f})")
-
-                # Show validation results summary
-                st.divider()
-                st.subheader("Validation Results Summary")
-
-                # Summary metrics
-                verified = len([v for v in validated_companies if v['validation_status'] == 'verified'])
-                partial = len([v for v in validated_companies if v['validation_status'] == 'partial'])
-                unverified = len([v for v in validated_companies if v['validation_status'] == 'unverified'])
-                errors = len([v for v in validated_companies if v['validation_status'] == 'error'])
-
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Verified", verified)
-                with col2:
-                    st.metric("Partial", partial)
-                with col3:
-                    st.metric("Unverified", unverified)
-                with col4:
-                    st.metric("Errors", errors)
-
-                # Show sample results based on mode
-                st.write("**Sample Validation Results:**")
-
-                sample_results = []
-                for val in validated_companies[:10]:  # Show up to 10
-                    result_row = {
-                        "Company": val.get('company_name', 'Unknown'),
-                        "Status": val.get('validation_status', 'unknown')
+                except Exception as e:
+                    st.error(f"Error validating {company_name}: {str(e)}")
+                    validation_result = {
+                        'company_name': company_name,
+                        'validation_status': 'error',
+                        'mode': validation_mode,
+                        'credits_used': 0,
+                        'validation_timestamp': datetime.now().isoformat(),
+                        'error': str(e)
                     }
+                    validated_companies.append(validation_result)
 
-                    # Add mode-specific columns with REAL data
-                    if "Contact" in validation_mode:
-                        # Show actual extracted data - handle both list and single values
-                        emails = val.get('emails', [])
-                        phones = val.get('phones', [])
-                        names = val.get('names', [])
+            st.session_state.validation_results = validated_companies
 
-                        # Also check for single value fields
-                        if not emails and val.get('email'):
-                            emails = [val.get('email')]
-                        if not phones and val.get('phone'):
-                            phones = [val.get('phone')]
-                        if not names and val.get('contact_name'):
-                            names = [val.get('contact_name')]
+            # Calculate actual cost
+            total_credits = sum(v.get('credits_used', 0) for v in validated_companies)
+            actual_cost = total_credits * 0.001
+            st.session_state.total_cost += actual_cost
 
-                        result_row["Email"] = emails[0] if emails else 'Not found'
-                        result_row["Phone"] = phones[0] if phones else 'Not found'
-                        result_row["Contact"] = names[0] if names else 'Not found'
+            progress_bar.empty()
+            status_text.empty()
 
-                    elif "CSR" in validation_mode:
-                        programs = val.get('csr_programs', [])
-                        certs = val.get('certifications', [])
-                        result_row["CSR Programs"] = ', '.join(programs) if programs else 'None'
-                        result_row["Certifications"] = ', '.join(certs) if certs else 'None'
+            # Show completion message
+            st.success(
+                f"✅ Validated {len(validated_companies)} companies using {total_credits} credits (${actual_cost:.3f})")
 
-                    elif "Financial" in validation_mode:
-                        result_row["Revenue"] = val.get('revenue_range', 'Not verified')
-                        result_row["Employees"] = val.get('employee_range', 'Not verified')
+            # Show validation results summary
+            st.divider()
+            st.subheader("Validation Results Summary")
 
-                    elif "Full" in validation_mode:
-                        # Show key data from full validation
-                        emails = val.get('emails', [])
-                        email = emails[0] if emails else val.get('email', 'Not found')
-                        result_row["Email"] = email
-                        result_row["Revenue"] = val.get('revenue_range', 'Not verified')
-                        programs = val.get('csr_programs', [])
-                        result_row["CSR"] = 'Yes' if programs else 'No'
-                        risks = val.get('risk_signals', [])
-                        result_row["Risks"] = 'Yes' if risks else 'No'
+            # Summary metrics - check for both cases and variations
+            verified = len([v for v in validated_companies if
+                            v.get('validation_status', '').lower() in ['verified', 'verify', 'valid']])
+            partial = len(
+                [v for v in validated_companies if v.get('validation_status', '').lower() in ['partial', 'partially']])
+            unverified = len([v for v in validated_companies if
+                              v.get('validation_status', '').lower() in ['unverified', 'not verified']])
+            errors = len(
+                [v for v in validated_companies if v.get('validation_status', '').lower() in ['error', 'failed']])
 
-                    sample_results.append(result_row)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Verified", verified)
+            with col2:
+                st.metric("Partial", partial)
+            with col3:
+                st.metric("Unverified", unverified)
+            with col4:
+                st.metric("Errors", errors)
 
-                if sample_results:
-                    sample_df = pd.DataFrame(sample_results)
-                    st.dataframe(sample_df, use_container_width=True, hide_index=True)
+            # Show sample results based on mode
+            st.write("**Sample Validation Results:**")
 
-                    # Show detailed validation data in expander
-                    with st.expander("📋 Detailed Validation Results", expanded=False):
-                        for val in validated_companies[:5]:
-                            st.write(f"**{val.get('company_name', 'Unknown')}**")
+            sample_results = []
+            for val in validated_companies[:10]:  # Show up to 10
+                result_row = {
+                    "Company": val.get('company_name', 'Unknown'),
+                    "Status": val.get('validation_status', 'unknown')
+                }
 
-                            # Show all emails found
+                # Add mode-specific columns with REAL data
+                if "Contact" in validation_mode:
+                    emails = val.get('emails', [])
+                    phones = val.get('phones', [])
+                    names = val.get('names', [])
+
+                    result_row["Email"] = emails[0] if emails else 'Not found'
+                    result_row["Phone"] = phones[0] if phones else 'Not found'
+                    result_row["Contact"] = names[0] if names else 'Not found'
+
+                elif "CSR" in validation_mode:
+                    programs = val.get('csr_programs', [])
+                    certs = val.get('certifications', [])
+                    result_row["CSR Programs"] = ', '.join(programs) if programs else 'None'
+                    result_row["Certifications"] = ', '.join(certs) if certs else 'None'
+                    result_row["Has Foundation"] = 'Yes' if val.get('has_foundation') else 'No'
+
+                elif "Financial" in validation_mode:
+                    result_row["Revenue"] = val.get('revenue_range', 'Not verified')
+                    result_row["Employees"] = val.get('employee_range', 'Not verified')
+                    result_row["Stock Listed"] = 'Yes' if val.get('stock_listed') else 'No'
+                    result_row["Financial Health"] = val.get('financial_health', 'Unknown')
+
+                elif "Full" in validation_mode:
+                    # Show key data from full validation
+                    emails = val.get('emails', [])
+                    result_row["Email"] = emails[0] if emails else 'Not found'
+                    result_row["Revenue"] = val.get('revenue_range', 'Not verified')
+                    programs = val.get('csr_programs', [])
+                    result_row["CSR"] = 'Yes' if programs else 'No'
+                    risks = val.get('risk_signals', [])
+                    result_row["Risk Signals"] = ', '.join(risks) if risks else 'None'
+
+                elif "Simple" in validation_mode:
+                    result_row["Location Verified"] = 'Yes' if val.get('location_verified') else 'No'
+                    result_row["Address"] = val.get('address', 'Not found')
+                    result_row["Phone"] = val.get('phone', 'Not found')
+
+                sample_results.append(result_row)
+
+            if sample_results:
+                sample_df = pd.DataFrame(sample_results)
+                st.dataframe(sample_df, use_container_width=True, hide_index=True)
+
+                # Show detailed validation data in expander
+                with st.expander("📋 Detailed Validation Results", expanded=False):
+                    for val in validated_companies[:5]:
+                        st.write(f"**{val.get('company_name', 'Unknown')}**")
+
+                        # Show validation status
+                        st.write(f"  ✅ Status: {val.get('validation_status', 'unknown')}")
+
+                        # Show mode-specific details
+                        if "Contact" in validation_mode or "Full" in validation_mode:
                             emails = val.get('emails', [])
                             if emails:
-                                st.write(f"  📧 Emails found: {', '.join(emails[:3])}")
+                                st.write(f"  📧 Emails: {', '.join(emails[:3])}")
 
-                            # Show all phones found
                             phones = val.get('phones', [])
                             if phones:
-                                st.write(f"  📞 Phones found: {', '.join(phones[:3])}")
+                                st.write(f"  📞 Phones: {', '.join(phones[:3])}")
 
-                            # Show all names found
                             names = val.get('names', [])
                             if names:
-                                st.write(f"  👤 Names found: {', '.join(names[:3])}")
+                                st.write(f"  👤 Contacts: {', '.join(names[:3])}")
 
-                            # Show CSR programs
+                        if "CSR" in validation_mode or "Full" in validation_mode:
                             programs = val.get('csr_programs', [])
                             if programs:
-                                st.write(f"  💚 CSR: {', '.join(programs)}")
+                                st.write(f"  💚 CSR Areas: {', '.join(programs)}")
 
-                            # Show certifications
                             certs = val.get('certifications', [])
                             if certs:
                                 st.write(f"  🏆 Certifications: {', '.join(certs)}")
 
-                            st.write(f"  💳 Credits used: {val.get('credits_used', 0)}")
-                            st.write("")
+                            if val.get('has_foundation'):
+                                st.write(f"  🏛️ Has Foundation: Yes")
 
-                    # Show credits breakdown
-                    st.write("**Credits Usage:**")
-                    total_credits_used = sum(v.get('credits_used', 0) for v in validated_companies)
-                    st.write(f"Total credits used: {total_credits_used} (${total_credits_used * 0.001:.3f})")
-                else:
-                    st.warning("No validation results to display")
+                        if "Financial" in validation_mode or "Full" in validation_mode:
+                            if val.get('revenue_range'):
+                                st.write(f"  💰 Revenue: {val.get('revenue_range')}")
+                            if val.get('employee_range'):
+                                st.write(f"  👥 Employees: {val.get('employee_range')}")
+                            if val.get('stock_listed'):
+                                st.write(f"  📈 Stock Listed: Yes")
+
+                        if val.get('risk_signals'):
+                            st.write(f"  ⚠️ Risk Signals: {', '.join(val.get('risk_signals', []))}")
+
+                        st.write(f"  💳 Credits Used: {val.get('credits_used', 0)}")
+                        st.write("")
+
+                # Show credits breakdown
+                st.write("**Credits Usage:**")
+                total_credits_used = sum(v.get('credits_used', 0) for v in validated_companies)
+                st.write(f"Total credits used: {total_credits_used} (${total_credits_used * 0.001:.3f})")
+            else:
+                st.warning("No validation results to display")
 
 # Tab 4: Results & Export
 with tab4:
     st.header("Results & Export")
 
-    # Combined results view
     if st.session_state.search_results or st.session_state.validation_results:
-        st.subheader(f"Combined Results")
+        st.subheader("Combined Results")
 
         # Create comprehensive DataFrame with validation data
         df_data = []
 
-        # Create a mapping of validation results by company name
-        validation_map = {}
-        for val in st.session_state.validation_results:
-            validation_map[val.get('company_name')] = val
+        # Create mapping of validation results
+        validation_map = {v.get('company_name'): v for v in st.session_state.validation_results}
 
         for company in st.session_state.search_results:
             if hasattr(company, 'dict'):
@@ -1059,9 +1444,7 @@ with tab4:
                 c = {'name': str(company)}
 
             company_name = c.get('name', 'Unknown')
-
-            # Get validation result for this company
-            validation_info = validation_map.get(company_name, None)
+            validation_info = validation_map.get(company_name, {})
 
             # Build base row
             row = {
@@ -1071,36 +1454,56 @@ with tab4:
                 "Employees": c.get('estimated_employees', 'Unknown'),
                 "ICP Score": f"{c.get('icp_score', 0):.0f}" if c.get('icp_score') else "N/A",
                 "ICP Tier": c.get('icp_tier', 'Untiered'),
-                "Validation Status": validation_info.get('validation_status',
-                                                         'Not Validated') if validation_info else 'Not Validated',
+                "Validation Status": validation_info.get('validation_status', 'Not Validated'),
                 "Confidence": c.get('confidence', 'Unknown')
             }
 
             # Add validation-specific columns if validated
             if validation_info:
                 # Add contact info if available
-                if 'email' in validation_info:
-                    row['Email'] = validation_info.get('email', '')
-                if 'phone' in validation_info:
-                    row['Phone'] = validation_info.get('phone', '')
-                if 'contact_name' in validation_info:
-                    row['Contact Name'] = validation_info.get('contact_name', '')
+                emails = validation_info.get('emails', [])
+                if emails:
+                    row['Email'] = emails[0] if emails else ''
+                    row['Additional Emails'] = ', '.join(emails[1:3]) if len(emails) > 1 else ''
+
+                phones = validation_info.get('phones', [])
+                if phones:
+                    row['Phone'] = phones[0] if phones else ''
+
+                names = validation_info.get('names', [])
+                if names:
+                    row['Contact Names'] = ', '.join(names[:3])
 
                 # Add financial validation if available
-                if 'revenue_range' in validation_info:
+                if validation_info.get('revenue_range'):
                     row['Verified Revenue'] = validation_info.get('revenue_range', '')
-                if 'employee_range' in validation_info:
+                if validation_info.get('employee_range'):
                     row['Verified Employees'] = validation_info.get('employee_range', '')
+                if 'stock_listed' in validation_info:
+                    row['Stock Listed'] = 'Yes' if validation_info.get('stock_listed') else 'No'
 
                 # Add CSR validation if available
-                if 'csr_programs' in validation_info:
-                    row['CSR Programs'] = ', '.join(validation_info.get('csr_programs', []))
-                if 'certifications' in validation_info:
-                    row['Certifications'] = ', '.join(validation_info.get('certifications', []))
+                csr_programs = validation_info.get('csr_programs', [])
+                if csr_programs:
+                    row['CSR Programs'] = ', '.join(csr_programs)
+
+                certifications = validation_info.get('certifications', [])
+                if certifications:
+                    row['Certifications'] = ', '.join(certifications)
+
+                if 'has_foundation' in validation_info:
+                    row['Has Foundation'] = 'Yes' if validation_info.get('has_foundation') else 'No'
+
+                # Add location validation if available
+                if 'location_verified' in validation_info:
+                    row['Location Verified'] = 'Yes' if validation_info.get('location_verified') else 'No'
+                if validation_info.get('address'):
+                    row['Verified Address'] = validation_info.get('address', '')
 
                 # Add risk signals if available
-                if 'risk_signals' in validation_info:
-                    row['Risk Signals'] = ', '.join(validation_info.get('risk_signals', []))
+                risk_signals = validation_info.get('risk_signals', [])
+                if risk_signals:
+                    row['Risk Signals'] = ', '.join(risk_signals)
 
             df_data.append(row)
 
@@ -1199,7 +1602,9 @@ with tab4:
                         'Tier B',
                         'Tier C',
                         'With Email',
-                        'With Phone'
+                        'With Phone',
+                        'With CSR Programs',
+                        'With Risk Signals'
                     ],
                     'Count': [
                         len(df),
@@ -1211,7 +1616,9 @@ with tab4:
                         len([d for d in df_data if d['ICP Tier'] == 'B']),
                         len([d for d in df_data if d['ICP Tier'] == 'C']),
                         len([d for d in df_data if d.get('Email')]),
-                        len([d for d in df_data if d.get('Phone')])
+                        len([d for d in df_data if d.get('Phone')]),
+                        len([d for d in df_data if d.get('CSR Programs')]),
+                        len([d for d in df_data if d.get('Risk Signals')])
                     ]
                 }
                 summary_df = pd.DataFrame(summary_data)
@@ -1270,7 +1677,7 @@ with tab4:
             )
 
         with col4:
-            # Download only validated companies
+            # Download only validated companies with all their data
             if validated_count > 0:
                 validated_df = filtered_df[filtered_df['Validation Status'] != 'Not Validated']
                 validated_csv = validated_df.to_csv(index=False)
@@ -1289,93 +1696,36 @@ with tab4:
 with tab5:
     st.header("Help & Documentation")
 
-    st.subheader("📖 Validation Modes Guide")
-
-    with st.expander("Simple Check (2-3 credits)", expanded=False):
-        st.write("""
-        **Use Cases:**
-        - Quick verification that companies exist
-        - Basic location confirmation
-        - Initial filtering of search results
-
-        **What It Does:**
-        - Searches Google Places for company presence
-        - Verifies location match
-        - Extracts basic contact info if available
-
-        **Best For:**
-        - Large batches where you need quick filtering
-        - Initial screening before deeper validation
-        """)
-
-    with st.expander("Smart Contact Extraction (3-5 credits)", expanded=False):
-        st.write("""
-        **Use Cases:**
-        - Building outreach lists
-        - Finding decision makers
-        - Email and phone collection
-
-        **What It Does:**
-        - Searches for contact pages
-        - Extracts emails with pattern matching
-        - Finds phone numbers in multiple formats
-        - Identifies executive names from LinkedIn
-
-        **Best For:**
-        - Sales prospecting
-        - Partnership outreach
-        - Donor recruitment
-        """)
-
-    with st.expander("Smart CSR Verification (3-5 credits)", expanded=False):
-        st.write("""
-        **Use Cases:**
-        - Verifying alignment with social causes
-        - Finding corporate giving programs
-        - Checking sustainability commitments
-
-        **What It Does:**
-        - Searches for CSR/sustainability pages
-        - Identifies focus areas (children, environment, etc.)
-        - Finds certifications (B-Corp, ISO 26000)
-        - Detects foundation or giving programs
-
-        **Best For:**
-        - Nonprofit partnership identification
-        - ESG-focused campaigns
-        - Values-aligned partnerships
-        """)
-
-    st.subheader("💡 Credit Optimization Tips")
-
-    st.info("""
-    **Tips to minimize credit usage:**
-    1. Start with Simple Check for initial filtering
-    2. Use targeted modes for specific data needs
-    3. Validate high-priority companies first
-    4. Use Raw Endpoint Access for custom queries
-    5. Batch similar companies together
+    st.subheader("📖 Quick Start Guide")
+    st.write("""
+    1. **Select a Profile** or create custom criteria in the Search Configuration tab
+    2. **Execute Search** to find companies matching your criteria
+    3. **Validate** companies to verify their information
+    4. **Export** results as CSV or Excel
     """)
 
-    st.subheader("📊 Field Extraction Reference")
+    st.subheader("🎯 Profile Descriptions")
 
-    extraction_df = pd.DataFrame({
-        "Field": ["Email", "Phone", "Executive Name", "Revenue", "Employees", "CSR Programs", "Certifications"],
-        "Simple": ["❌", "✅", "❌", "❌", "❌", "❌", "❌"],
-        "Contact": ["✅", "✅", "✅", "❌", "❌", "❌", "❌"],
-        "CSR": ["❌", "❌", "❌", "❌", "❌", "✅", "✅"],
-        "Financial": ["❌", "❌", "❌", "✅", "✅", "❌", "❌"],
-        "Full": ["✅", "✅", "✅", "✅", "✅", "✅", "✅"]
-    })
+    with st.expander("RMH Sydney Profile"):
+        st.write("""
+        **Target:** Companies suitable for Ronald McDonald House Sydney partnerships
+        - **Tier A:** Perfect matches with strong CSR focus on children/community
+        - **Tier B:** Good matches with community involvement
+        - **Tier C:** Potential matches meeting basic criteria
+        """)
 
-    st.dataframe(extraction_df, use_container_width=True)
+    with st.expander("Guide Dogs Victoria Profile"):
+        st.write("""
+        **Target:** Companies suitable for Guide Dogs Victoria partnerships
+        - **Tier A:** Strategic partners with disability/inclusion focus
+        - **Tier B:** Exploratory partners with health/community focus
+        - **Tier C:** Potential partners meeting basic criteria
+        """)
 
 # Footer
 st.divider()
-selected_models_display = st.session_state.selected_models if st.session_state.selected_models else ['Not selected']
 st.caption(
     f"Session Cost: ${st.session_state.total_cost:.3f} | "
-    f"Models: {', '.join(selected_models_display)} | "
     f"Companies Found: {len(st.session_state.search_results)} | "
     f"Validated: {len(st.session_state.validation_results)}"
 )

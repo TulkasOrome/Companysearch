@@ -1,518 +1,401 @@
 # serper_validation_integration.py
 """
-Serper validation integration for Streamlit app
-Provides actual validation using Serper API instead of simulated data
+Fixed Serper validation integration for the Streamlit app
+Ensures validation_status is properly set as lowercase 'verified'
 """
 
 import asyncio
+import aiohttp
 import json
-import http.client
 import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-import time
-
-
-class SerperValidator:
-    """Actual Serper validation implementation"""
-
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.total_credits_used = 0
-
-        # Email patterns
-        self.email_patterns = [
-            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
-            r'"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})"',
-            r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,})',
-        ]
-
-        # Name patterns
-        self.name_patterns = [
-            r'(?:CEO|Chief Executive Officer|Managing Director|MD|Director|Manager|President|Founder|Owner|Principal|Partner)(?:\s*[:\-–])?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+),?\s*(?:CEO|Chief Executive Officer|Managing Director|MD|Director|Manager|President|Founder|Owner)',
-            r'Contact(?:\s*[:\-–])?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
-            r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s*<[^>]+@[^>]+>',
-        ]
-
-    def serper_search(self, query: str, endpoint: str = "search") -> Dict[str, Any]:
-        """Make actual Serper API call"""
-        try:
-            conn = http.client.HTTPSConnection("google.serper.dev")
-            payload = json.dumps({
-                "q": query,
-                "gl": "au",
-                "num": 10
-            })
-            headers = {
-                'X-API-KEY': self.api_key,
-                'Content-Type': 'application/json'
-            }
-
-            conn.request("POST", f"/{endpoint}", payload, headers)
-            res = conn.getresponse()
-            data = res.read()
-
-            result = json.loads(data.decode("utf-8"))
-            self.total_credits_used += result.get('credits', 1)
-            return result
-
-        except Exception as e:
-            return {"error": str(e), "organic": [], "places": [], "news": []}
-
-    def scrape_url(self, url: str) -> Dict[str, Any]:
-        """Scrape website using Serper"""
-        try:
-            conn = http.client.HTTPSConnection("scrape.serper.dev")
-            payload = json.dumps({"url": url})
-            headers = {
-                'X-API-KEY': self.api_key,
-                'Content-Type': 'application/json'
-            }
-
-            conn.request("POST", "/", payload, headers)
-            res = conn.getresponse()
-            data = res.read()
-
-            result = json.loads(data.decode("utf-8"))
-            self.total_credits_used += result.get('credits', 2)
-            return result
-
-        except Exception as e:
-            return {"error": str(e), "text": "", "metadata": {}}
-
-    def extract_emails_from_text(self, text: str) -> List[str]:
-        """Extract real emails from text"""
-        emails = set()
-
-        for pattern in self.email_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                if isinstance(match, tuple):
-                    match = match[0]
-                match = match.replace('[at]', '@').replace('(at)', '@')
-                match = match.replace('[dot]', '.').replace('(dot)', '.')
-                match = match.replace(' ', '')
-
-                # Validate email format
-                if '@' in match and '.' in match.split('@')[1]:
-                    # Filter out common non-personal emails
-                    exclude = ['example.com', 'sentry.io', 'wordpress', 'w3.org', 'schema.org']
-                    if not any(ex in match for ex in exclude):
-                        emails.add(match.lower())
-
-        return list(emails)
-
-    def extract_names_from_text(self, text: str) -> List[str]:
-        """Extract real contact names from text"""
-        names = set()
-
-        for pattern in self.name_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
-            for match in matches:
-                if isinstance(match, tuple):
-                    match = match[0]
-                name = match.strip()
-
-                # Validate it's a real name
-                parts = name.split()
-                if 2 <= len(parts) <= 4:
-                    if all(part[0].isupper() for part in parts if part):
-                        # Filter out false positives
-                        false_positives = ['contact us', 'click here', 'read more',
-                                           'learn more', 'find out', 'get started']
-                        if not any(fp in name.lower() for fp in false_positives):
-                            names.add(name)
-
-        return list(names)
-
-    def extract_phones_from_text(self, text: str) -> List[str]:
-        """Extract phone numbers from text"""
-        phones = set()
-
-        # Phone patterns (Australian format)
-        phone_patterns = [
-            r'\+61\s?\d{1,2}\s?\d{4}\s?\d{4}',  # +61 2 9999 9999
-            r'\(0\d\)\s?\d{4}\s?\d{4}',  # (02) 9999 9999
-            r'0\d\s?\d{4}\s?\d{4}',  # 02 9999 9999
-            r'1[38]00\s?\d{3}\s?\d{3}',  # 1300/1800 numbers
-        ]
-
-        for pattern in phone_patterns:
-            matches = re.findall(pattern, text)
-            phones.update(matches)
-
-        return list(phones)
-
-    async def validate_simple(self, company_name: str, location: str = "Australia") -> Dict[str, Any]:
-        """Simple validation - just check existence (2-3 credits)"""
-        # Places search
-        places_result = self.serper_search(f"{company_name} {location}", "places")
-
-        result = {
-            'company_name': company_name,
-            'validation_status': 'unverified',
-            'mode': 'Simple Check',
-            'credits_used': 2,
-            'validation_timestamp': datetime.now().isoformat()
-        }
-
-        if places_result.get('places'):
-            place = places_result['places'][0]
-            place_name = place.get('title', '').lower()
-
-            # Check name match
-            if company_name.lower() in place_name or place_name in company_name.lower():
-                result['validation_status'] = 'verified'
-                result['phone'] = place.get('phoneNumber')
-                result['address'] = place.get('address')
-                result['website'] = place.get('website')
-
-        return result
-
-    async def validate_contact(self, company_name: str, location: str = "Australia") -> Dict[str, Any]:
-        """Smart contact extraction (3-5 credits)"""
-        result = {
-            'company_name': company_name,
-            'validation_status': 'unverified',
-            'mode': 'Smart Contact Extraction',
-            'credits_used': 0,
-            'validation_timestamp': datetime.now().isoformat(),
-            'emails': [],
-            'phones': [],
-            'names': []
-        }
-
-        # 1. Search for contact info
-        contact_search = self.serper_search(f'"{company_name}" contact email phone')
-        result['credits_used'] += 1
-
-        if contact_search.get('organic'):
-            for item in contact_search['organic'][:5]:
-                text = f"{item.get('title', '')} {item.get('snippet', '')}"
-
-                # Extract emails
-                emails = self.extract_emails_from_text(text)
-                result['emails'].extend(emails)
-
-                # Extract names
-                names = self.extract_names_from_text(text)
-                result['names'].extend(names)
-
-                # Extract phones
-                phones = self.extract_phones_from_text(text)
-                result['phones'].extend(phones)
-
-        # 2. LinkedIn search for executives
-        linkedin_search = self.serper_search(f'site:linkedin.com "{company_name}" CEO OR Director')
-        result['credits_used'] += 1
-
-        if linkedin_search.get('organic'):
-            for item in linkedin_search['organic'][:3]:
-                title = item.get('title', '')
-                # Extract name from LinkedIn title format
-                name_match = re.match(r'^([^-|]+)\s*[-|]', title)
-                if name_match:
-                    name = name_match.group(1).strip()
-                    if len(name.split()) >= 2:
-                        result['names'].append(name)
-
-        # 3. Try to find website and scrape
-        website_search = self.serper_search(f'"{company_name}" official website')
-        result['credits_used'] += 1
-
-        website_url = None
-        if website_search.get('organic'):
-            for item in website_search['organic'][:3]:
-                link = item.get('link', '')
-                if company_name.lower().replace(' ', '') in link.lower().replace('-', '').replace('_', ''):
-                    website_url = link
-                    break
-
-        if website_url:
-            # Scrape website
-            scraped = self.scrape_url(website_url)
-            result['credits_used'] += 2
-
-            if scraped.get('text'):
-                text = scraped['text']
-
-                # Extract from scraped content
-                emails = self.extract_emails_from_text(text)
-                result['emails'].extend(emails)
-
-                names = self.extract_names_from_text(text)
-                result['names'].extend(names)
-
-                phones = self.extract_phones_from_text(text)
-                result['phones'].extend(phones)
-
-        # Deduplicate
-        result['emails'] = list(set(result['emails']))
-        result['names'] = list(set(result['names']))
-        result['phones'] = list(set(result['phones']))
-
-        # Set first found values for display
-        if result['emails']:
-            result['email'] = result['emails'][0]
-            result['validation_status'] = 'verified'
-        if result['phones']:
-            result['phone'] = result['phones'][0]
-            result['validation_status'] = 'verified'
-        if result['names']:
-            result['contact_name'] = result['names'][0]
-
-        return result
-
-    async def validate_csr(self, company_name: str, location: str = "Australia") -> Dict[str, Any]:
-        """Smart CSR verification (3-5 credits)"""
-        result = {
-            'company_name': company_name,
-            'validation_status': 'unverified',
-            'mode': 'Smart CSR Verification',
-            'credits_used': 0,
-            'validation_timestamp': datetime.now().isoformat(),
-            'csr_programs': [],
-            'certifications': [],
-            'csr_verified': False
-        }
-
-        # 1. Search for CSR programs
-        csr_search = self.serper_search(f'"{company_name}" CSR "corporate social responsibility" sustainability')
-        result['credits_used'] += 1
-
-        csr_keywords = {
-            'children': ['children', 'kids', 'youth', 'school', 'education'],
-            'community': ['community', 'local', 'neighborhood', 'volunteer'],
-            'environment': ['environment', 'sustainability', 'green', 'carbon', 'climate'],
-            'health': ['health', 'medical', 'hospital', 'wellness'],
-            'diversity': ['diversity', 'inclusion', 'equity', 'women', 'minorities']
-        }
-
-        certifications = ['b-corp', 'b corp', 'iso 26000', 'iso 14001', 'carbon neutral']
-
-        if csr_search.get('organic'):
-            for item in csr_search['organic']:
-                text = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
-
-                # Check for CSR programs
-                for area, keywords in csr_keywords.items():
-                    if any(kw in text for kw in keywords):
-                        if area not in result['csr_programs']:
-                            result['csr_programs'].append(area)
-
-                # Check for certifications
-                for cert in certifications:
-                    if cert in text and cert not in result['certifications']:
-                        result['certifications'].append(cert)
-
-        # 2. Search for foundation or giving programs
-        foundation_search = self.serper_search(f'"{company_name}" foundation donation charity giving')
-        result['credits_used'] += 1
-
-        if foundation_search.get('organic'):
-            for item in foundation_search['organic'][:3]:
-                text = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
-                if any(word in text for word in ['foundation', 'charity', 'donation', 'sponsorship']):
-                    result['csr_verified'] = True
-                    if 'charitable giving' not in result['csr_programs']:
-                        result['csr_programs'].append('charitable giving')
-
-        if result['csr_programs'] or result['certifications']:
-            result['validation_status'] = 'verified'
-
-        return result
-
-    async def validate_financial(self, company_name: str, location: str = "Australia") -> Dict[str, Any]:
-        """Smart financial verification (3-4 credits)"""
-        result = {
-            'company_name': company_name,
-            'validation_status': 'unverified',
-            'mode': 'Smart Financial Check',
-            'credits_used': 0,
-            'validation_timestamp': datetime.now().isoformat(),
-            'revenue_verified': False,
-            'employee_verified': False
-        }
-
-        # 1. Search for financial info
-        financial_search = self.serper_search(f'"{company_name}" revenue employees annual report')
-        result['credits_used'] += 1
-
-        # Revenue patterns
-        revenue_patterns = [
-            r'\$?([\d,]+\.?\d*)\s*(million|billion|m|b)\s*(revenue|turnover|sales)',
-            r'(revenue|turnover|sales)\s*of\s*\$?([\d,]+\.?\d*)\s*(million|billion|m|b)',
-        ]
-
-        # Employee patterns
-        employee_patterns = [
-            r'([\d,]+)\s*employees',
-            r'([\d,]+)\s*staff',
-            r'team\s*of\s*([\d,]+)',
-        ]
-
-        if financial_search.get('organic'):
-            for item in financial_search['organic']:
-                text = f"{item.get('title', '')} {item.get('snippet', '')}"
-
-                # Check for revenue
-                for pattern in revenue_patterns:
-                    matches = re.findall(pattern, text, re.IGNORECASE)
-                    if matches:
-                        result['revenue_verified'] = True
-                        match = matches[0]
-                        if isinstance(match, tuple):
-                            amount = match[0] if match[0] else match[1]
-                            unit = match[1] if match[1] in ['million', 'billion', 'm', 'b'] else match[2]
-                        else:
-                            amount = match
-                            unit = "unknown"
-                        result['revenue_range'] = f"${amount} {unit}"
-                        break
-
-                # Check for employees
-                for pattern in employee_patterns:
-                    matches = re.findall(pattern, text, re.IGNORECASE)
-                    if matches:
-                        result['employee_verified'] = True
-                        result['employee_range'] = matches[0] if isinstance(matches[0], str) else matches[0][0]
-                        break
-
-        # 2. Check ASX listings
-        asx_search = self.serper_search(f'site:asx.com.au "{company_name}"')
-        result['credits_used'] += 1
-
-        if asx_search.get('organic'):
-            result['asx_listed'] = True
-            result['validation_status'] = 'verified'
-
-        if result['revenue_verified'] or result['employee_verified']:
-            result['validation_status'] = 'verified'
-
-        return result
-
-    async def validate_full(self, company_name: str, location: str = "Australia") -> Dict[str, Any]:
-        """Full validation combining all methods (10-15 credits)"""
-        # Run all validations
-        simple = await self.validate_simple(company_name, location)
-        contact = await self.validate_contact(company_name, location)
-        csr = await self.validate_csr(company_name, location)
-        financial = await self.validate_financial(company_name, location)
-
-        # Combine results
-        result = {
-            'company_name': company_name,
-            'validation_status': 'unverified',
-            'mode': 'Full Validation',
-            'credits_used': sum([
-                simple.get('credits_used', 0),
-                contact.get('credits_used', 0),
-                csr.get('credits_used', 0),
-                financial.get('credits_used', 0)
-            ]),
-            'validation_timestamp': datetime.now().isoformat()
-        }
-
-        # Merge data
-        if contact.get('email'):
-            result['email'] = contact['email']
-        if contact.get('phone'):
-            result['phone'] = contact['phone']
-        if contact.get('contact_name'):
-            result['contact_name'] = contact['contact_name']
-
-        result['emails'] = contact.get('emails', [])
-        result['phones'] = contact.get('phones', [])
-        result['names'] = contact.get('names', [])
-
-        result['csr_programs'] = csr.get('csr_programs', [])
-        result['certifications'] = csr.get('certifications', [])
-        result['csr_verified'] = csr.get('csr_verified', False)
-
-        result['revenue_verified'] = financial.get('revenue_verified', False)
-        result['revenue_range'] = financial.get('revenue_range')
-        result['employee_verified'] = financial.get('employee_verified', False)
-        result['employee_range'] = financial.get('employee_range')
-
-        # Determine overall status
-        if any([
-            contact.get('validation_status') == 'verified',
-            csr.get('validation_status') == 'verified',
-            financial.get('validation_status') == 'verified'
-        ]):
-            result['validation_status'] = 'verified'
-        elif simple.get('validation_status') == 'verified':
-            result['validation_status'] = 'partial'
-
-        # Add risk signals (search for negative news)
-        news_search = self.serper_search(f'"{company_name}" scandal lawsuit controversy', "news")
-        result['credits_used'] += 1
-
-        risk_signals = []
-        if news_search.get('news'):
-            for item in news_search['news'][:3]:
-                text = f"{item.get('title', '')} {item.get('snippet', '')}".lower()
-                if any(word in text for word in ['lawsuit', 'scandal', 'fraud', 'investigation']):
-                    risk_signals.append(item.get('title', '')[:100])
-
-        result['risk_signals'] = risk_signals
-
-        return result
 
 
 async def validate_company_with_serper(
         company: Dict[str, Any],
-        validation_mode: str,
-        serper_api_key: str
+        mode: str,
+        api_key: str
 ) -> Dict[str, Any]:
     """
-    Main function to validate a company using Serper
+    Validate a company using Serper API
 
     Args:
         company: Company data dictionary
-        validation_mode: Type of validation to perform
-        serper_api_key: Serper API key
+        mode: Validation mode string
+        api_key: Serper API key
 
     Returns:
-        Validation result dictionary
+        Validation result dictionary with proper status
     """
-    validator = SerperValidator(serper_api_key)
 
-    # Extract company info
-    if hasattr(company, 'dict'):
-        company_dict = company.dict()
-    elif isinstance(company, dict):
-        company_dict = company
-    else:
-        company_dict = {'name': str(company)}
+    company_name = company.get('name', 'Unknown')
+    location = company.get('headquarters', {}).get('city', '') if isinstance(company.get('headquarters'), dict) else ''
 
-    company_name = company_dict.get('name', 'Unknown')
+    # Map mode strings to actual validation types
+    mode_map = {
+        "Simple Check (2-3 credits)": "simple",
+        "Smart Contact Extraction (3-5 credits)": "contact",
+        "Smart CSR Verification (3-5 credits)": "csr",
+        "Smart Financial Check (3-4 credits)": "financial",
+        "Full Validation (10-15 credits)": "full",
+        "Raw Endpoint Access": "raw",
+        "Custom Configuration": "custom"
+    }
 
-    # Determine location
-    location = "Australia"  # Default
-    if company_dict.get('headquarters'):
-        hq = company_dict['headquarters']
-        if isinstance(hq, dict):
-            location = hq.get('city', 'Australia')
-    elif company_dict.get('office_locations'):
-        locations = company_dict['office_locations']
-        if locations and isinstance(locations, list):
-            location = locations[0] if isinstance(locations[0], str) else 'Australia'
+    actual_mode = mode_map.get(mode, "simple")
 
-    # Run appropriate validation
-    if "Simple" in validation_mode:
-        result = await validator.validate_simple(company_name, location)
-    elif "Contact" in validation_mode:
-        result = await validator.validate_contact(company_name, location)
-    elif "CSR" in validation_mode:
-        result = await validator.validate_csr(company_name, location)
-    elif "Financial" in validation_mode:
-        result = await validator.validate_financial(company_name, location)
-    elif "Full" in validation_mode:
-        result = await validator.validate_full(company_name, location)
-    else:
-        # Default to simple
-        result = await validator.validate_simple(company_name, location)
+    # Initialize result with default status
+    result = {
+        'company_name': company_name,
+        'validation_status': 'unverified',  # Default to unverified
+        'mode': actual_mode,
+        'credits_used': 0,
+        'validation_timestamp': datetime.now().isoformat()
+    }
+
+    try:
+        # Create aiohttp session
+        async with aiohttp.ClientSession() as session:
+
+            if actual_mode == "simple":
+                # Simple validation - just check existence
+                queries = [
+                    ('places', f"{company_name} {location}")
+                ]
+
+            elif actual_mode == "contact":
+                # Contact extraction
+                queries = [
+                    ('search', f'"{company_name}" email contact @'),
+                    ('search', f'site:linkedin.com "{company_name}" CEO OR Director'),
+                    ('places', f"{company_name} {location}")
+                ]
+
+            elif actual_mode == "csr":
+                # CSR verification
+                queries = [
+                    ('search', f'"{company_name} Foundation" OR "{company_name} CSR" sustainability'),
+                    ('search', f'"{company_name}" community donation charity sponsorship'),
+                    ('search', f'"{company_name}" "B Corp" OR "ISO 26000" OR "carbon neutral"'),
+                    ('news', f'"{company_name}" donation charity community')
+                ]
+
+            elif actual_mode == "financial":
+                # Financial verification
+                queries = [
+                    ('search', f'"{company_name}" annual revenue employees million'),
+                    ('search', f'"{company_name}" ASX listed share price'),
+                    ('news', f'"{company_name}" funding expansion acquisition')
+                ]
+
+            elif actual_mode == "full":
+                # Full validation - combine all
+                queries = [
+                    ('places', f"{company_name} {location}"),
+                    ('search', f'"{company_name}" revenue employees'),
+                    ('search', f'"{company_name}" email contact @'),
+                    ('search', f'"{company_name}" CSR sustainability community'),
+                    ('news', f'"{company_name}"')
+                ]
+
+            else:
+                # Default to simple
+                queries = [('places', f"{company_name}")]
+
+            # Execute queries
+            all_results = []
+            for endpoint, query in queries:
+                serper_result = await make_serper_request(session, api_key, endpoint, query)
+                all_results.append((endpoint, serper_result))
+                result['credits_used'] += 1
+
+            # Process results based on mode
+            if actual_mode == "simple":
+                result.update(process_simple_results(all_results, company_name))
+
+            elif actual_mode == "contact":
+                result.update(process_contact_results(all_results, company_name))
+
+            elif actual_mode == "csr":
+                result.update(process_csr_results(all_results, company_name))
+
+            elif actual_mode == "financial":
+                result.update(process_financial_results(all_results, company_name))
+
+            elif actual_mode == "full":
+                # Combine all processing
+                simple = process_simple_results(all_results, company_name)
+                contact = process_contact_results(all_results, company_name)
+                csr = process_csr_results(all_results, company_name)
+                financial = process_financial_results(all_results, company_name)
+
+                # Merge results and determine best status
+                result.update({
+                    'location_verified': simple.get('location_verified', False),
+                    'emails': contact.get('emails', []),
+                    'phones': contact.get('phones', []),
+                    'names': contact.get('names', []),
+                    'csr_programs': csr.get('csr_programs', []),
+                    'certifications': csr.get('certifications', []),
+                    'revenue_range': financial.get('revenue_range', ''),
+                    'employee_range': financial.get('employee_range', ''),
+                    'risk_signals': financial.get('risk_signals', [])
+                })
+
+                # Determine overall status - ENSURE IT'S LOWERCASE 'verified'
+                if simple.get('validation_status') == 'verified' or contact.get('validation_status') == 'verified':
+                    result['validation_status'] = 'verified'
+                elif any([simple.get('validation_status') == 'partial', contact.get('validation_status') == 'partial']):
+                    result['validation_status'] = 'partial'
+                else:
+                    result['validation_status'] = 'unverified'
+
+    except Exception as e:
+        result['error'] = str(e)
+        result['validation_status'] = 'error'
+
+    # ENSURE validation_status is always lowercase and one of the expected values
+    if result['validation_status'] not in ['verified', 'partial', 'unverified', 'error']:
+        result['validation_status'] = 'unverified'
 
     return result
+
+
+async def make_serper_request(
+        session: aiohttp.ClientSession,
+        api_key: str,
+        endpoint: str,
+        query: str
+) -> Dict[str, Any]:
+    """Make a request to Serper API"""
+
+    url = f"https://google.serper.dev/{endpoint}"
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "application/json"
+    }
+
+    data = {"q": query}
+
+    # Add endpoint-specific parameters
+    if endpoint == "news":
+        data["time"] = "month"
+    elif endpoint == "places":
+        data["gl"] = "au"  # Default to Australia
+
+    try:
+        async with session.post(url, json=data, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            else:
+                return {"error": f"API error {response.status}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def process_simple_results(results: List[tuple], company_name: str) -> Dict[str, Any]:
+    """Process results for simple validation"""
+
+    output = {
+        'validation_status': 'unverified',
+        'location_verified': False
+    }
+
+    for endpoint, data in results:
+        if endpoint == 'places' and 'places' in data:
+            for place in data['places'][:3]:
+                if fuzzy_match(company_name, place.get('title', '')):
+                    output['validation_status'] = 'verified'  # LOWERCASE
+                    output['location_verified'] = True
+                    output['address'] = place.get('address', '')
+                    output['phone'] = place.get('phoneNumber', '')
+                    break
+
+    return output
+
+
+def process_contact_results(results: List[tuple], company_name: str) -> Dict[str, Any]:
+    """Process results for contact extraction"""
+
+    output = {
+        'emails': [],
+        'phones': [],
+        'names': [],
+        'validation_status': 'unverified'  # Default status
+    }
+
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+
+    for endpoint, data in results:
+        if endpoint == 'search' and 'organic' in data:
+            for result in data['organic']:
+                text = f"{result.get('title', '')} {result.get('snippet', '')}"
+
+                # Extract emails
+                emails = re.findall(email_pattern, text)
+                output['emails'].extend(emails)
+
+                # Extract names from LinkedIn results
+                if 'linkedin.com' in result.get('link', ''):
+                    title = result.get('title', '')
+                    name_match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
+                    if name_match:
+                        output['names'].append(name_match.group(1))
+
+        elif endpoint == 'places' and 'places' in data:
+            for place in data['places'][:2]:
+                if place.get('phoneNumber'):
+                    output['phones'].append(place['phoneNumber'])
+
+    # Deduplicate
+    output['emails'] = list(set(output['emails']))[:10]
+    output['names'] = list(set(output['names']))[:10]
+    output['phones'] = list(set(output['phones']))[:5]
+
+    # Set status based on findings
+    if output['emails'] or output['phones']:
+        output['validation_status'] = 'verified'  # LOWERCASE
+    elif output['names']:
+        output['validation_status'] = 'partial'  # LOWERCASE
+
+    return output
+
+
+def process_csr_results(results: List[tuple], company_name: str) -> Dict[str, Any]:
+    """Process results for CSR verification"""
+
+    output = {
+        'csr_programs': [],
+        'certifications': [],
+        'has_foundation': False,
+        'validation_status': 'unverified'  # Default status
+    }
+
+    csr_keywords = {
+        'children': ['children', 'kids', 'youth', 'school'],
+        'community': ['community', 'local', 'volunteer'],
+        'environment': ['environment', 'sustainability', 'green'],
+        'health': ['health', 'medical', 'hospital']
+    }
+
+    cert_patterns = ['b corp', 'b-corp', 'iso 26000', 'iso 14001', 'carbon neutral']
+
+    for endpoint, data in results:
+        if endpoint == 'search' and 'organic' in data:
+            for result in data['organic']:
+                text = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
+
+                # Check for foundation
+                if f"{company_name.lower()} foundation" in text:
+                    output['has_foundation'] = True
+
+                # Check CSR areas
+                for area, keywords in csr_keywords.items():
+                    if any(keyword in text for keyword in keywords):
+                        if area not in output['csr_programs']:
+                            output['csr_programs'].append(area)
+
+                # Check certifications
+                for cert in cert_patterns:
+                    if cert in text and cert not in output['certifications']:
+                        output['certifications'].append(cert)
+
+        elif endpoint == 'news' and 'news' in data:
+            for item in data['news'][:5]:
+                title = item.get('title', '').lower()
+                if any(word in title for word in ['donation', 'charity', 'sponsor']):
+                    output['validation_status'] = 'verified'  # LOWERCASE
+
+    # Set final status
+    if output['csr_programs'] or output['certifications'] or output['has_foundation']:
+        if output['validation_status'] != 'verified':
+            output['validation_status'] = 'verified'  # LOWERCASE
+
+    return output
+
+
+def process_financial_results(results: List[tuple], company_name: str) -> Dict[str, Any]:
+    """Process results for financial verification"""
+
+    output = {
+        'revenue_range': '',
+        'employee_range': '',
+        'stock_listed': False,
+        'risk_signals': [],
+        'validation_status': 'unverified',  # Default status
+        'financial_health': 'Unknown'
+    }
+
+    revenue_pattern = r'\$?([\d,]+\.?\d*)\s*(million|billion|m|b)'
+    employee_pattern = r'([\d,]+)\s*(?:employees|staff)'
+
+    negative_signals = ['bankruptcy', 'lawsuit', 'scandal', 'fraud', 'investigation']
+
+    for endpoint, data in results:
+        if endpoint == 'search' and 'organic' in data:
+            for result in data['organic']:
+                text = f"{result.get('title', '')} {result.get('snippet', '')}"
+
+                # Extract revenue
+                if not output['revenue_range']:
+                    revenue_matches = re.findall(revenue_pattern, text, re.IGNORECASE)
+                    if revenue_matches:
+                        output['revenue_range'] = f"${revenue_matches[0][0]}{revenue_matches[0][1].upper()}"
+                        output['validation_status'] = 'verified'  # LOWERCASE
+
+                # Extract employees
+                if not output['employee_range']:
+                    employee_matches = re.findall(employee_pattern, text, re.IGNORECASE)
+                    if employee_matches:
+                        output['employee_range'] = employee_matches[0]
+                        if output['validation_status'] != 'verified':
+                            output['validation_status'] = 'partial'  # LOWERCASE
+
+                # Check for ASX listing
+                if 'asx' in text.lower():
+                    output['stock_listed'] = True
+
+        elif endpoint == 'news' and 'news' in data:
+            for item in data['news']:
+                text = item.get('snippet', '').lower()
+                # Check for negative signals
+                for signal in negative_signals:
+                    if signal in text:
+                        output['risk_signals'].append(signal)
+
+    output['risk_signals'] = list(set(output['risk_signals']))
+
+    return output
+
+
+def fuzzy_match(name1: str, name2: str, threshold: float = 0.7) -> bool:
+    """Fuzzy name matching for company names"""
+
+    name1_clean = name1.lower().strip()
+    name2_clean = name2.lower().strip()
+
+    # Direct substring match
+    if name1_clean in name2_clean or name2_clean in name1_clean:
+        return True
+
+    # Remove common suffixes
+    suffixes = ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp', 'group']
+    for suffix in suffixes:
+        name1_clean = name1_clean.replace(suffix, '').strip()
+        name2_clean = name2_clean.replace(suffix, '').strip()
+
+    if name1_clean in name2_clean or name2_clean in name1_clean:
+        return True
+
+    # Word overlap check
+    words1 = set(name1_clean.split())
+    words2 = set(name2_clean.split())
+
+    if not words1 or not words2:
+        return False
+
+    overlap = len(words1.intersection(words2))
+    total = len(words1.union(words2))
+
+    return (overlap / total) >= threshold if total > 0 else False
