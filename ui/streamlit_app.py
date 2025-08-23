@@ -1,7 +1,7 @@
 # main_streamlit_app.py
 """
+Corporate IQ - Company Discovery Platform
 Main Streamlit Application Entry Point
-Coordinates all tabs and manages session state
 """
 
 import streamlit as st
@@ -33,7 +33,7 @@ from shared.data_models import ICPManager
 
 # Page config
 st.set_page_config(
-    page_title="Company Search & Validation Platform",
+    page_title="Corporate IQ - Company Discovery Platform",
     page_icon="🔍",
     layout="wide"
 )
@@ -49,8 +49,8 @@ icp_manager = ICPManager()
 # ============================================================================
 
 # Title
-st.title("🔍 Company Search & Validation Platform")
-st.markdown("AI-powered company discovery with advanced validation modes and enhanced token handling")
+st.title("🔍 Corporate IQ")
+st.markdown("<p style='font-size: 14px; color: #666; margin-top: -10px;'>Company discovery tool using multi parallel AI agents and various validation models via Serper API</p>", unsafe_allow_html=True)
 
 # Render sidebar
 serper_key = render_sidebar()

@@ -1,6 +1,6 @@
 # tabs/execute_search_tab.py
 """
-Execute Search Tab - Further simplified with number input and search mode selection
+Execute Search Tab - Fixed timing estimation and added live logging
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ from shared.session_state import update_cost
 
 
 def render_execute_search_tab():
-    """Render the Execute Search tab with simplified controls"""
+    """Render the Execute Search tab with fixed timing"""
 
     st.header("Execute Company Search")
 
@@ -111,15 +111,21 @@ def render_execute_search_tab():
         # Compact metrics row
         col1, col2, col3 = st.columns(3)
 
-        # Calculate requirements
+        # Calculate requirements - FIXED TIMING ESTIMATION
         if st.session_state.parallel_execution_enabled:
             models_count = len(st.session_state.selected_models)
-            total_calls = (target_count // (50 * models_count)) * models_count + models_count
+            # Each model processes in parallel, but each needs multiple calls for large targets
+            calls_per_model = (target_count // (50 * models_count)) + 1
+            total_calls = calls_per_model * models_count
+            # Parallel execution: time is based on the slowest model, not sum of all
+            # Each call takes about 10-15 seconds, models run in parallel
+            estimated_time = calls_per_model * 12  # 12 seconds per call layer
         else:
             total_calls = (target_count // 50) + 1
+            # Single model: sequential calls
+            estimated_time = total_calls * 12  # 12 seconds per call
 
         estimated_cost = total_calls * 0.02
-        estimated_time = total_calls * 2  # ~2 seconds per call
 
         with col1:
             st.caption("Target")
@@ -129,7 +135,12 @@ def render_execute_search_tab():
             st.markdown(f"**${estimated_cost:.2f}**")
         with col3:
             st.caption("Est. Time")
-            st.markdown(f"**{estimated_time // 60}m {estimated_time % 60}s**")
+            minutes = estimated_time // 60
+            seconds = estimated_time % 60
+            if minutes > 0:
+                st.markdown(f"**{minutes}m {seconds}s**")
+            else:
+                st.markdown(f"**{seconds}s**")
 
         # Check execution requirements
         if target_count > 500 and not st.session_state.parallel_execution_enabled:
@@ -191,21 +202,37 @@ def render_execute_search_tab():
 
 
 def execute_search(target_count, total_calls, estimated_cost, search_mode):
-    """Execute the search with progress tracking"""
+    """Execute the search with progress tracking and live logging"""
 
     # Initialize progress tracking
     progress_bar = st.progress(0)
     status_placeholder = st.empty()
+
+    # Create a container for live logs
+    log_container = st.container()
+    log_placeholder = log_container.empty()
+    logs = []
+
+    def add_log(message):
+        """Add a log message to the display"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        logs.append(f"[{timestamp}] {message}")
+        # Keep only last 20 logs for display
+        display_logs = logs[-20:]
+        log_text = "\n".join(display_logs)
+        log_placeholder.text_area("Search Progress Log", log_text, height=300, disabled=True)
 
     # Store existing results if adding
     existing_results = []
     if "Add to Existing" in search_mode and st.session_state.search_results:
         existing_results = st.session_state.search_results.copy()
         status_placeholder.info(f"Adding to existing {len(existing_results):,} companies...")
+        add_log(f"Mode: Adding to existing {len(existing_results):,} companies")
     else:
         # Clear for new search
         st.session_state.search_results = []
         st.session_state.all_search_results = []
+        add_log("Mode: New search - clearing existing results")
 
     # Clear model tracking
     st.session_state.model_results = {}
@@ -217,14 +244,29 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
         status_placeholder.info(
             f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models..."
         )
+        add_log(f"Starting parallel search with {len(st.session_state.selected_models)} models")
+        add_log(f"Target: {target_count:,} companies")
 
         try:
             start_time = time.time()
+
+            # Capture logs from the parallel search by monkey-patching print
+            original_print = print
+
+            def logged_print(*args, **kwargs):
+                message = " ".join(str(arg) for arg in args)
+                add_log(message)
+                original_print(*args, **kwargs)
+
+            # Temporarily replace print
+            import builtins
+            builtins.print = logged_print
 
             # Run parallel search
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
+            add_log("Initializing parallel execution...")
             result = loop.run_until_complete(
                 execute_parallel_search(
                     st.session_state.selected_models,
@@ -234,7 +276,11 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
             )
             loop.close()
 
+            # Restore original print
+            builtins.print = original_print
+
             execution_time = time.time() - start_time
+            add_log(f"Search completed in {execution_time:.1f} seconds")
 
             # Extract results
             new_companies = result.get('companies', [])
@@ -275,6 +321,12 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
                 st.session_state.search_results = unique_companies
                 new_unique_count = len(unique_companies) - len(existing_results)
 
+                add_log(f"✅ Added {new_unique_count} new unique companies")
+                add_log(f"Total: {len(unique_companies):,} companies")
+                add_log(f"Duplicates removed: {duplicates_with_existing}")
+
+                # Clear the log area and show success
+                log_placeholder.empty()
                 status_placeholder.success(
                     f"✅ Added {new_unique_count} new unique companies!\n"
                     f"Total: {len(unique_companies):,} companies\n"
@@ -283,8 +335,12 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
             else:
                 # New search
                 st.session_state.search_results = new_companies
+                add_log(f"✅ Found {len(new_companies):,} unique companies")
+
+                # Clear the log area and show success
+                log_placeholder.empty()
                 status_placeholder.success(
-                    f"✅ Found {len(new_companies):,} unique companies!"
+                    f"✅ Found {len(new_companies):,} unique companies in {execution_time:.1f} seconds!"
                 )
 
             # Update session state
@@ -307,6 +363,7 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
             progress_bar.progress(1.0)
 
         except Exception as e:
+            add_log(f"❌ Search failed: {str(e)}")
             st.error(f"Search failed: {str(e)}")
             traceback.print_exc()
 
@@ -316,6 +373,7 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
             st.error("Single model cannot handle more than 500 companies.")
         else:
             status_placeholder.info(f"Searching with {st.session_state.selected_models[0]}...")
+            add_log(f"Starting single model search with {st.session_state.selected_models[0]}")
 
             try:
                 agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
@@ -327,6 +385,8 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
                     call_target = min(50, target_count - len(all_companies))
                     progress = (call_num + 1) / calls_needed
                     progress_bar.progress(progress)
+
+                    add_log(f"Call {call_num + 1}/{calls_needed}: Requesting {call_target} companies")
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -340,6 +400,7 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
 
                     companies = result.get("companies", [])
                     all_companies.extend(companies)
+                    add_log(f"Call {call_num + 1} returned {len(companies)} companies")
 
                     if call_num < calls_needed - 1:
                         time.sleep(0.5)
@@ -360,9 +421,14 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
                     st.session_state.search_results = all_companies
 
                 update_cost(calls_needed * 0.02)
+                add_log(f"✅ Found {len(all_companies)} companies")
+
+                # Clear the log area and show success
+                log_placeholder.empty()
                 status_placeholder.success(f"✅ Found {len(all_companies)} companies!")
 
             except Exception as e:
+                add_log(f"❌ Search failed: {str(e)}")
                 st.error(f"Search failed: {str(e)}")
 
     progress_bar.empty()
