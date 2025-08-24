@@ -178,7 +178,7 @@ def render_validation_tab(serper_key):
                 max_validate = st.number_input(
                     f"Companies to validate (max {max_available})",
                     1,
-                    min(50, max_available),
+                    min(500, max_available),
                     min(10, max_available)
                 )
 
