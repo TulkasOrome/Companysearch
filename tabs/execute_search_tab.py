@@ -213,6 +213,9 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
     log_placeholder = log_container.empty()
     logs = []
 
+    # Generate a unique key for this search execution using timestamp
+    search_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
     def add_log(message):
         """Add a log message to the display"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -220,7 +223,14 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
         # Keep only last 20 logs for display
         display_logs = logs[-20:]
         log_text = "\n".join(display_logs)
-        log_placeholder.text_area("Search Progress Log", log_text, height=300, disabled=True)
+        # Use unique key based on search timestamp to avoid duplicate key error
+        log_placeholder.text_area(
+            "Search Progress Log",
+            log_text,
+            height=300,
+            disabled=True,
+            key=f"search_log_{search_timestamp}"  # Unique key for each search execution
+        )
 
     # Store existing results if adding
     existing_results = []
