@@ -2,6 +2,7 @@
 """
 Search utilities with exhaustive criteria verification before relaxation
 Ensures all segments are tried at each level before compromising criteria
+UPDATED: Added proper state, industry, and entity type matching
 """
 
 import asyncio
@@ -49,9 +50,19 @@ class SearchProgressTracker:
         self.yield_per_attempt: Dict[int, List[int]] = {}
         self.all_companies = []
 
+        # EXCLUDED ENTITY TYPES - entities that should never be included
+        self.excluded_entity_types = [
+            'tafe', 'institute of tafe', 'university', 'college', 'school',
+            'government', 'department of', 'ministry', 'council', 'municipality',
+            'superannuation', 'super fund', 'pension fund',
+            'educational institution', 'training provider', 'rto',
+            'charity', 'foundation', 'not-for-profit', 'nfp', 'ngo',
+            'association', 'society', 'club'
+        ]
+
     def add_companies(self, model: str, companies: List[Any], segment_info: Optional[Dict[str, Any]] = None) -> List[
         Any]:
-        """Add companies and track segment coverage"""
+        """Add companies and track segment coverage with entity type filtering"""
         unique_companies = []
 
         # Track segment if provided
@@ -73,6 +84,11 @@ class SearchProgressTracker:
             else:
                 company_name = company.get('name', '').lower().strip()
                 original_name = company.get('name', '')
+
+            # ENTITY TYPE CHECK - Skip non-company entities
+            if self._is_excluded_entity(company_name):
+                logger.debug(f"Excluding non-company entity: {original_name}")
+                continue
 
             # Create core name for deduplication
             name_core = self._get_name_core(company_name)
@@ -97,6 +113,14 @@ class SearchProgressTracker:
         self.model_progress[model]['duplicates'] += len(companies) - len(unique_companies)
 
         return unique_companies
+
+    def _is_excluded_entity(self, company_name: str) -> bool:
+        """Check if the entity name indicates it's not a company"""
+        name_lower = company_name.lower()
+        for excluded_term in self.excluded_entity_types:
+            if excluded_term in name_lower:
+                return True
+        return False
 
     def record_attempt(self, relaxation_level: int, companies_found: int):
         """Record an attempt at a specific relaxation level"""
@@ -124,11 +148,25 @@ class SearchProgressTracker:
         return consecutive
 
     def _get_name_core(self, company_name: str) -> str:
-        """Get core name for deduplication"""
+        """Get core name for deduplication - ENHANCED with more suffixes"""
         name_core = company_name
-        for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp', 'llc', 'plc',
-                       '& co', 'and company', 'group', 'holdings', 'international', 'global']:
+
+        # Extended suffix list for better deduplication
+        suffixes = [
+            'pty ltd', 'pty. ltd.', 'proprietary limited', 'limited', 'ltd', 'ltd.',
+            'inc', 'inc.', 'incorporated', 'corporation', 'corp', 'corp.',
+            'llc', 'l.l.c.', 'plc', 'p.l.c.',
+            'gmbh', 'ag', 's.a.', 'b.v.', 'n.v.',
+            '& co', '& co.', 'and company', 'and co',
+            'group', 'holdings', 'international', 'global',
+            '& associates', '& partners', 'partners',
+            'australia', 'aust', 'aus', 'nz', 'new zealand',
+            'victoria', 'vic', 'nsw', 'qld', 'queensland', 'wa', 'sa', 'tas', 'act', 'nt'
+        ]
+
+        for suffix in suffixes:
             name_core = name_core.replace(suffix, '').strip()
+
         return name_core
 
     def get_exclusion_list(self, max_items: int = 100) -> List[str]:
@@ -364,7 +402,8 @@ class EnhancedSearchStrategistAgent:
                 lambda: self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
-                        {"role": "system", "content": "You are a company finder. Return valid JSON only."},
+                        {"role": "system",
+                         "content": "You are a company finder. Return valid JSON only. Only return actual companies, not educational institutions, government entities, or non-profit organizations."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3 + (relaxation_level * 0.05),
@@ -376,11 +415,17 @@ class EnhancedSearchStrategistAgent:
             content = response.choices[0].message.content
             result = json.loads(content)
 
-            # Process companies
+            # Process companies with validation
             companies = []
             for company_data in result.get("companies", []):
                 try:
                     company_data = self._ensure_company_fields(company_data)
+
+                    # VALIDATE AGAINST CRITERIA
+                    if not self._validate_company_against_criteria(company_data, relaxed_criteria):
+                        logger.debug(f"Rejecting company {company_data.get('name')} - doesn't match criteria")
+                        continue
+
                     company_data['search_segment'] = f"{segment_type}:{segment_value}"
                     company_data['source_model'] = self.deployment_name
                     company_data['relaxation_level'] = relaxation_level
@@ -404,6 +449,97 @@ class EnhancedSearchStrategistAgent:
             logger.error(f"Search error for segment {segment_type}:{segment_value}: {e}")
             return {"companies": [], "segment": f"{segment_type}:{segment_value}", "error": str(e)}
 
+    def _validate_company_against_criteria(self, company_data: Dict[str, Any], criteria: SearchCriteria) -> bool:
+        """Validate that a company matches the search criteria - STATE AND INDUSTRY MATCHING"""
+
+        # STATE VALIDATION
+        if criteria.location.states:
+            company_hq = str(company_data.get('headquarters', {})).lower() if company_data.get('headquarters') else ""
+            state_match = False
+
+            for state in criteria.location.states:
+                state_lower = state.lower()
+                # Check various state representations
+                if state_lower in company_hq or self._get_state_abbrev(state_lower) in company_hq:
+                    state_match = True
+                    break
+
+            if not state_match:
+                logger.debug(f"State mismatch: {company_data.get('name')} not in {criteria.location.states}")
+                return False
+
+        # INDUSTRY VALIDATION - Strict matching
+        if criteria.industries:
+            company_industry = company_data.get('industry_category', '').lower()
+            industry_match = False
+
+            for ind in criteria.industries:
+                ind_name = ind.get('name', '').lower()
+                # Allow some flexibility for industry matching
+                if ind_name in company_industry or company_industry in ind_name:
+                    industry_match = True
+                    break
+                # Check for common variations
+                if self._match_industry_variations(company_industry, ind_name):
+                    industry_match = True
+                    break
+
+            if not industry_match:
+                logger.debug(
+                    f"Industry mismatch: {company_data.get('name')} industry '{company_industry}' not in {[ind['name'] for ind in criteria.industries]}")
+                return False
+
+        # ENTITY TYPE VALIDATION - Ensure it's an actual company
+        company_name = company_data.get('name', '').lower()
+        excluded_entity_terms = [
+            'tafe', 'institute of tafe', 'university', 'college', 'school',
+            'government', 'department of', 'ministry', 'council', 'municipality',
+            'superannuation', 'super fund', 'pension fund',
+            'educational institution', 'training provider', 'rto',
+            'charity', 'foundation', 'not-for-profit', 'nfp', 'ngo',
+            'association', 'society', 'club'
+        ]
+
+        for excluded_term in excluded_entity_terms:
+            if excluded_term in company_name:
+                logger.debug(f"Entity type exclusion: {company_data.get('name')} contains '{excluded_term}'")
+                return False
+
+        return True
+
+    def _get_state_abbrev(self, state: str) -> str:
+        """Get state abbreviation for Australian states"""
+        state_abbrevs = {
+            'victoria': 'vic',
+            'new south wales': 'nsw',
+            'queensland': 'qld',
+            'western australia': 'wa',
+            'south australia': 'sa',
+            'tasmania': 'tas',
+            'northern territory': 'nt',
+            'australian capital territory': 'act'
+        }
+        return state_abbrevs.get(state, state)
+
+    def _match_industry_variations(self, company_industry: str, target_industry: str) -> bool:
+        """Check for common industry variations"""
+        industry_variations = {
+            'technology': ['tech', 'it', 'software', 'digital', 'information technology'],
+            'financial services': ['finance', 'banking', 'insurance', 'investment', 'fintech'],
+            'health': ['healthcare', 'medical', 'pharmaceutical', 'biotech', 'health services'],
+            'construction': ['building', 'engineering', 'infrastructure', 'property development'],
+            'property': ['real estate', 'realty', 'property management'],
+            'hospitality': ['hotels', 'tourism', 'accommodation', 'restaurants', 'food service']
+        }
+
+        # Check if both industries match any variation group
+        for main_industry, variations in industry_variations.items():
+            if (target_industry in variations or target_industry == main_industry) and \
+                    (company_industry in variations or company_industry == main_industry):
+                return True
+
+        return False
+
     def _build_segment_prompt(
             self,
             segment_type: str,
@@ -413,11 +549,14 @@ class EnhancedSearchStrategistAgent:
             exclusion_list: Optional[List[str]] = None,
             relaxed_items: List[str] = None
     ) -> str:
-        """Build prompt based on segmentation strategy"""
+        """Build prompt based on segmentation strategy - ENHANCED WITH STATE AND INDUSTRY ENFORCEMENT"""
         prompt_parts = []
 
         prompt_parts.append("=" * 60)
         prompt_parts.append(f"FIND {target_count} COMPANIES")
+        prompt_parts.append("⛔ ONLY return actual commercial companies")
+        prompt_parts.append(
+            "⛔ DO NOT include: TAFEs, universities, schools, government entities, councils, charities, foundations, associations, or superannuation funds")
 
         # Show relaxation if applied
         if relaxed_items:
@@ -449,13 +588,34 @@ class EnhancedSearchStrategistAgent:
         # Add search criteria
         prompt_parts.append("\n📋 SEARCH CRITERIA:")
 
-        # Location
+        # ENHANCED LOCATION - Include states!
         if criteria.location.countries:
-            prompt_parts.append(f"Countries: {', '.join(criteria.location.countries)}")
+            prompt_parts.append(f"⛔ Countries: {', '.join(criteria.location.countries)}")
+
+        # STATE ENFORCEMENT - CRITICAL FIX
+        if criteria.location.states:
+            prompt_parts.append(
+                f"⛔ MUST be headquartered in these STATES/REGIONS: {', '.join(criteria.location.states)}")
+            prompt_parts.append(f"⛔ DO NOT include companies from other states")
+
+            # Add specific guidance for Australian states
+            if "Victoria" in criteria.location.states:
+                prompt_parts.append("⛔ Victoria means Melbourne, Geelong, Ballarat, Bendigo and other Victorian cities")
+                prompt_parts.append("⛔ EXCLUDE companies from Sydney, Brisbane, Perth, Adelaide etc.")
+            elif "New South Wales" in criteria.location.states:
+                prompt_parts.append("⛔ New South Wales means Sydney, Newcastle, Wollongong and other NSW cities")
+                prompt_parts.append("⛔ EXCLUDE companies from Melbourne, Brisbane, Perth, Adelaide etc.")
+
         if criteria.location.cities:
             prompt_parts.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
 
-        # Financial
+        # Add proximity if specified
+        if criteria.location.proximity:
+            location = criteria.location.proximity.get('location')
+            radius = criteria.location.proximity.get('radius_km')
+            prompt_parts.append(f"⛔ Within {radius}km of {location}")
+
+        # Financial - keeping as is per your request
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
                 prompt_parts.append(
@@ -463,14 +623,27 @@ class EnhancedSearchStrategistAgent:
             elif criteria.financial.revenue_min:
                 prompt_parts.append(f"Revenue: >${criteria.financial.revenue_min / 1e6:.0f}M")
 
-        # Employees
+        # Employees - keeping as is per your request
         if criteria.organizational.employee_count_min:
             prompt_parts.append(f"Minimum employees: {criteria.organizational.employee_count_min}")
 
-        # Industries
+        # ENHANCED INDUSTRY ENFORCEMENT
         if segment_type != "industry" and criteria.industries:
             ind_names = [ind['name'] for ind in criteria.industries[:5]]
-            prompt_parts.append(f"Industries: {', '.join(ind_names)}")
+            prompt_parts.append(f"⛔ ONLY these industries: {', '.join(ind_names)}")
+            prompt_parts.append(f"⛔ DO NOT include companies from other industries")
+
+            # Add specific guidance for common industries
+            if any('technology' in ind['name'].lower() for ind in criteria.industries):
+                prompt_parts.append("✓ Technology includes: software, IT services, SaaS, digital, tech consulting")
+                prompt_parts.append("❌ NOT technology: construction using tech, tech-enabled retail, energy companies")
+            if any('health' in ind['name'].lower() for ind in criteria.industries):
+                prompt_parts.append(
+                    "✓ Health includes: hospitals, medical devices, pharmaceuticals, healthcare services")
+                prompt_parts.append("❌ NOT health: education institutions teaching health, health insurance only")
+            if any('financial' in ind['name'].lower() for ind in criteria.industries):
+                prompt_parts.append("✓ Financial Services includes: banks, insurance, investment, accounting, fintech")
+                prompt_parts.append("❌ NOT financial services: superannuation funds, government financial entities")
 
         # Business types
         if criteria.business_types:
@@ -482,16 +655,16 @@ class EnhancedSearchStrategistAgent:
 
         prompt_parts.append("\n📊 RETURN JSON FORMAT:")
         prompt_parts.append("""{"companies":[{
-"name":"Company Name",
+"name":"Company Name (actual company only)",
 "confidence":"high",
 "operates_in_country":true,
 "business_type":"B2B",
-"industry_category":"Industry",
+"industry_category":"Must match criteria industries",
 "reasoning":"Why this matches",
 "estimated_revenue":"50-100M",
 "revenue_category":"medium",
 "estimated_employees":"100-500",
-"headquarters":{"city":"City"},
+"headquarters":{"city":"City", "state":"State must match criteria"},
 "csr_focus_areas":[]
 }]}""")
 
@@ -543,23 +716,74 @@ class EnhancedSearchStrategistAgent:
         return company_data
 
     def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
-        """Calculate ICP score with relaxation awareness"""
+        """Calculate ICP score with relaxation awareness - ENHANCED WITH STATE/INDUSTRY SCORING"""
         score = 0
         max_score = 100
+        matched = []
+        missing = []
 
-        # Base scoring
+        # STATE MATCH (25 points) - NEW ENHANCED SCORING
+        if criteria.location.states and company.headquarters:
+            hq_str = str(company.headquarters).lower() if isinstance(company.headquarters, dict) else str(
+                company.headquarters).lower()
+            state_matched = False
+
+            for state in criteria.location.states:
+                if state.lower() in hq_str or self._get_state_abbrev(state.lower()) in hq_str:
+                    score += 25
+                    matched.append(f"State match: {state}")
+                    state_matched = True
+                    break
+
+            if not state_matched:
+                missing.append("State match")
+
+        # INDUSTRY MATCH (20 points) - ENHANCED SCORING
+        if criteria.industries:
+            industry_matched = False
+            company_industry = company.industry_category.lower() if company.industry_category else ""
+
+            for ind in criteria.industries:
+                ind_name = ind.get('name', '').lower()
+                if ind_name in company_industry or self._match_industry_variations(company_industry, ind_name):
+                    score += 20
+                    matched.append(f"Industry match: {ind.get('name')}")
+                    industry_matched = True
+                    break
+
+            if not industry_matched:
+                missing.append("Industry match")
+
+        # Location (city) match (15 points)
+        if criteria.location.cities and company.headquarters:
+            hq_str = str(company.headquarters).lower() if isinstance(company.headquarters, dict) else str(
+                company.headquarters).lower()
+            for city in criteria.location.cities:
+                if city.lower() in hq_str:
+                    score += 15
+                    matched.append(f"City match: {city}")
+                    break
+
+        # Base scoring for other criteria
         if company.operates_in_country:
-            score += 20
+            score += 10
+            matched.append("Country match")
+
         if company.estimated_revenue:
-            score += 20
+            score += 10
+            matched.append("Revenue data available")
+
         if company.estimated_employees:
-            score += 15
+            score += 10
+            matched.append("Employee data available")
+
         if company.business_type in criteria.business_types:
-            score += 15
+            score += 5
+            matched.append(f"Business type: {company.business_type}")
+
         if company.csr_programs or company.csr_focus_areas:
-            score += 15
-        if company.confidence in ["high", "absolute"]:
-            score += 15
+            score += 5
+            matched.append("CSR programs")
 
         # Get relaxation level (handle both dict and object)
         if hasattr(company, 'relaxation_level'):
@@ -589,6 +813,8 @@ class EnhancedSearchStrategistAgent:
 
         company.icp_score = score
         company.icp_tier = tier
+        company.matched_criteria = matched
+        company.missing_criteria = missing
 
         return company
 
@@ -598,43 +824,47 @@ def apply_smart_relaxation(
         level: int,
         use_case: str = "general"
 ) -> Tuple[SearchCriteria, List[str]]:
-    """Apply smart relaxation based on criteria priority and use case"""
+    """Apply smart relaxation based on criteria priority and use case - STATE AND INDUSTRY STAY LONGER"""
     import copy
 
     relaxed = copy.deepcopy(criteria)
     relaxed_items = []
 
-    # Define relaxation plans by use case
+    # Define relaxation plans by use case - UPDATED TO KEEP STATE AND INDUSTRY LONGER
     if "rmh" in use_case.lower():
         relaxation_plan = {
             1: ["csr_focus_areas", "certifications", "recent_events"],
-            2: ["industries"],
+            2: ["business_types"],  # Remove industries from early relaxation
             3: ["revenue_expand_20"],
             4: ["employee_reduce_25"],
-            5: ["revenue_expand_50"],
-            6: ["location_cities"],
+            5: ["industries"],  # Move industries to later relaxation
+            6: ["location_cities"],  # Keep cities but not states
+            7: ["location_states"],  # States relaxed last
         }
     elif "guide_dogs" in use_case.lower():
         relaxation_plan = {
             1: ["recent_events"],
             2: ["esg_maturity"],
             3: ["business_types"],
-            4: ["industries"],
-            5: ["certifications"],
-            6: ["employee_reduce_50"],
+            4: ["certifications"],
+            5: ["employee_reduce_50"],
+            6: ["industries"],  # Move industries to later
+            7: ["location_cities"],  # Cities before states
+            8: ["location_states"],  # States relaxed last
         }
     else:
         relaxation_plan = {
             1: ["csr_focus_areas", "certifications"],
-            2: ["industries", "business_types"],
+            2: ["business_types"],
             3: ["revenue_expand_50"],
             4: ["employee_reduce_50"],
-            5: ["location_cities"],
-            6: ["most_restrictions"],
+            5: ["industries"],  # Industries later
+            6: ["location_cities"],  # Cities before states
+            7: ["location_states"],  # States last
         }
 
     # Apply relaxations up to the specified level
-    for relax_level in range(1, min(level + 1, 7)):
+    for relax_level in range(1, min(level + 1, 9)):  # Increased max level
         items = relaxation_plan.get(relax_level, [])
 
         for item in items:
@@ -681,6 +911,9 @@ def apply_smart_relaxation(
             elif item == "location_cities":
                 relaxed.location.cities = []
                 relaxed_items.append("City restrictions removed")
+            elif item == "location_states":
+                relaxed.location.states = []
+                relaxed_items.append("State restrictions removed")
             elif item == "most_restrictions":
                 relaxed.organizational.employee_count_min = None
                 relaxed.financial.revenue_min = None
@@ -756,7 +989,7 @@ async def execute_parallel_search(
     tracker = SearchProgressTracker()
     all_companies = []
     relaxation_level = 0
-    max_relaxation = 6
+    max_relaxation = 8  # Increased to accommodate state relaxation
 
     while len(all_companies) < target_count and relaxation_level <= max_relaxation:
         logger.info(f"\n{'=' * 60}")
