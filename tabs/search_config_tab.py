@@ -1,6 +1,6 @@
 # tabs/search_config_tab.py
 """
-Search Configuration Tab - Exact replica from original streamlit_app.py
+Search Configuration Tab - Updated with revenue categories
 """
 
 import streamlit as st
@@ -9,12 +9,13 @@ from shared.data_models import (
     LocationCriteria,
     FinancialCriteria,
     OrganizationalCriteria,
-    BehavioralSignals
+    BehavioralSignals,
+    determine_revenue_categories_from_range
 )
 
 
 def render_search_config_tab(icp_manager):
-    """Render the Search Configuration tab - exact replica from original"""
+    """Render the Search Configuration tab with revenue categories"""
 
     st.header("Search Configuration")
 
@@ -50,8 +51,8 @@ def render_search_config_tab(icp_manager):
                 "Select Tier",
                 ["A", "B", "C"],
                 format_func=lambda x: {
-                    "A": "Tier A - Perfect Match (Revenue $5-100M, 50+ employees, CSR focus)",
-                    "B": "Tier B - Good Match (Revenue $2-200M, 20+ employees, Community involvement)",
+                    "A": "Tier A - Perfect Match (Revenue $5M-$100M, 50+ employees, CSR focus)",
+                    "B": "Tier B - Good Match (Revenue $2M-$200M, 20+ employees, Community involvement)",
                     "C": "Tier C - Potential Match (Revenue $1M+, Any size, Basic criteria)"
                 }[x],
                 key="rmh_tier_select"
@@ -66,7 +67,7 @@ def render_search_config_tab(icp_manager):
                 ["A", "B", "C"],
                 format_func=lambda x: {
                     "A": "Tier A - Strategic Partners (Revenue $500M+, 500+ employees, Certifications)",
-                    "B": "Tier B - Exploratory Partners (Revenue $50-500M, 100-500 employees)",
+                    "B": "Tier B - Exploratory Partners (Revenue $50M-$500M, 100-500 employees)",
                     "C": "Tier C - Potential Partners (Revenue $10M+, 50+ employees)"
                 }[x],
                 key="gdv_tier_select"
@@ -127,31 +128,118 @@ def render_search_config_tab(icp_manager):
             proximity_center = None
             proximity_radius = None
 
-    # Financial Section
+    # Financial Section - UPDATED WITH REVENUE CATEGORIES
     with st.expander("💰 Financial Criteria", expanded=True):
+        st.markdown("### Revenue Range")
+
+        # Revenue category selector
+        revenue_categories = {
+            "Very Low": {"min": 0, "max": 1, "desc": "< $1M", "cat": "very_low"},
+            "Low": {"min": 1, "max": 10, "desc": "$1M - $10M", "cat": "low"},
+            "Medium": {"min": 10, "max": 100, "desc": "$10M - $100M", "cat": "medium"},
+            "High": {"min": 100, "max": 1000, "desc": "$100M - $1B", "cat": "high"},
+            "Very High": {"min": 1000, "max": float('inf'), "desc": "$1B+", "cat": "very_high"}
+        }
+
+        # Create a double-ended slider for revenue range
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Minimum revenue selector
+            min_revenue_options = ["No minimum", "< $1M", "$1M+", "$10M+", "$100M+", "$1B+"]
+            min_revenue_values = [0, 0, 1, 10, 100, 1000]  # in millions
+
+            default_min_idx = 0
+            if criteria and criteria.financial.revenue_min:
+                min_val = criteria.financial.revenue_min / 1_000_000
+                # Find closest option
+                for i, val in enumerate(min_revenue_values):
+                    if val <= min_val:
+                        default_min_idx = i
+
+            min_revenue_selection = st.selectbox(
+                "Minimum Revenue",
+                min_revenue_options,
+                index=default_min_idx,
+                help="Select minimum revenue threshold"
+            )
+            min_revenue_millions = min_revenue_values[min_revenue_options.index(min_revenue_selection)]
+
+        with col2:
+            # Maximum revenue selector
+            max_revenue_options = ["No maximum", "< $1M", "< $10M", "< $100M", "< $1B"]
+            max_revenue_values = [float('inf'), 1, 10, 100, 1000]  # in millions
+
+            default_max_idx = 0
+            if criteria and criteria.financial.revenue_max:
+                max_val = criteria.financial.revenue_max / 1_000_000
+                # Find closest option
+                for i, val in enumerate(max_revenue_values):
+                    if val >= max_val:
+                        default_max_idx = i
+                        break
+
+            max_revenue_selection = st.selectbox(
+                "Maximum Revenue",
+                max_revenue_options,
+                index=default_max_idx,
+                help="Select maximum revenue threshold"
+            )
+            max_revenue_millions = max_revenue_values[max_revenue_options.index(max_revenue_selection)]
+
+        # Show which categories will be included
+        if min_revenue_millions > 0 or max_revenue_millions < float('inf'):
+            included_categories = []
+            category_list = []
+
+            for cat_name, cat_info in revenue_categories.items():
+                # Check if this category overlaps with selected range
+                cat_overlaps = False
+
+                if max_revenue_millions == float('inf'):
+                    # No max limit
+                    if cat_info["max"] == float('inf') or cat_info["max"] > min_revenue_millions:
+                        cat_overlaps = True
+                elif min_revenue_millions == 0:
+                    # No min limit
+                    if cat_info["min"] < max_revenue_millions:
+                        cat_overlaps = True
+                else:
+                    # Both limits
+                    if (cat_info["min"] < max_revenue_millions and
+                            (cat_info["max"] == float('inf') or cat_info["max"] > min_revenue_millions)):
+                        cat_overlaps = True
+
+                if cat_overlaps:
+                    included_categories.append(cat_info["cat"])
+                    category_list.append(f"**{cat_name}** ({cat_info['desc']})")
+
+            st.info(f"📊 This will search for companies in these revenue categories:\n" +
+                    ", ".join(category_list))
+
+        st.divider()
+
+        # Employee counts
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            default_min = criteria.financial.revenue_min / 1_000_000 if criteria and criteria.financial.revenue_min else 0
-            revenue_min = st.number_input("Min Revenue (M)", 0, 10000, int(default_min))
-
             default_emp_min = criteria.organizational.employee_count_min if criteria else 0
             employee_min = st.number_input("Min Employees", 0, 100000, default_emp_min or 0)
 
         with col2:
-            default_max = criteria.financial.revenue_max / 1_000_000 if criteria and criteria.financial.revenue_max else 100
-            revenue_max = st.number_input("Max Revenue (M)", 0, 10000, int(default_max))
-
-            default_emp_max = criteria.organizational.employee_count_max if criteria else 1000
-            employee_max = st.number_input("Max Employees", 0, 100000, default_emp_max or 1000)
+            default_emp_max = criteria.organizational.employee_count_max if criteria else 0
+            employee_max = st.number_input("Max Employees", 0, 100000, default_emp_max or 0,
+                                           help="0 = no maximum")
 
         with col3:
             default_currency = criteria.financial.revenue_currency if criteria else "AUD"
             currency = st.selectbox("Currency", ["AUD", "USD", "EUR", "GBP"],
                                     index=["AUD", "USD", "EUR", "GBP"].index(default_currency))
 
-            default_giving = criteria.financial.giving_capacity_min / 1_000 if criteria and criteria.financial.giving_capacity_min else 0
-            giving_capacity = st.number_input("Min Giving Capacity (K)", 0, 1000, int(default_giving))
+        # Giving capacity (optional)
+        default_giving = criteria.financial.giving_capacity_min / 1_000 if criteria and criteria.financial.giving_capacity_min else 0
+        giving_capacity = st.number_input("Min Giving Capacity ($K)", 0, 10000, int(default_giving),
+                                          help="Estimated philanthropic capacity in thousands")
 
         # Office types field
         office_types = st.multiselect(
@@ -182,7 +270,8 @@ def render_search_config_tab(icp_manager):
             industries = st.text_area(
                 "Industries (one per line)",
                 value="\n".join(default_industries),
-                placeholder="Construction\nProperty\nHospitality"
+                placeholder="Construction\nProperty\nHospitality",
+                help="Leave empty to search all industries"
             )
 
     # CSR & Behavioral Section
@@ -200,7 +289,8 @@ def render_search_config_tab(icp_manager):
             csr_focus = st.multiselect(
                 "CSR Focus Areas",
                 csr_options,
-                default=valid_csr_defaults
+                default=valid_csr_defaults,
+                help="Optional: Filter for specific CSR focus areas"
             )
 
             event_options = ["Office Move", "CSR Launch", "Expansion", "Anniversary", "Award",
@@ -212,7 +302,8 @@ def render_search_config_tab(icp_manager):
             recent_events = st.multiselect(
                 "Recent Events",
                 event_options,
-                default=valid_event_defaults
+                default=valid_event_defaults,
+                help="Optional: Look for companies with these recent events"
             )
 
         with col2:
@@ -225,16 +316,18 @@ def render_search_config_tab(icp_manager):
             certifications = st.multiselect(
                 "Certifications",
                 cert_options,
-                default=valid_cert_defaults
+                default=valid_cert_defaults,
+                help="Optional: Filter for specific certifications"
             )
 
             esg_maturity = st.selectbox(
                 "ESG Maturity",
                 ["Any", "Basic", "Developing", "Mature", "Leading"],
-                index=0
+                index=0,
+                help="Optional: Minimum ESG maturity level"
             )
 
-    # Exclusions Section (RESTORED)
+    # Exclusions Section
     with st.expander("🚫 Exclusions", expanded=False):
         col1, col2 = st.columns(2)
 
@@ -298,6 +391,13 @@ def render_search_config_tab(icp_manager):
 
     # Action Buttons
     if st.button("✅ Confirm Criteria", type="primary", use_container_width=True):
+        # Convert revenue to actual values
+        revenue_min = min_revenue_millions * 1_000_000 if min_revenue_millions > 0 else None
+        revenue_max = max_revenue_millions * 1_000_000 if max_revenue_millions < float('inf') else None
+
+        # Calculate revenue categories
+        revenue_categories_list = determine_revenue_categories_from_range(revenue_min, revenue_max)
+
         # Build criteria object
         built_criteria = SearchCriteria(
             location=LocationCriteria(
@@ -308,9 +408,10 @@ def render_search_config_tab(icp_manager):
                 exclusions=[e.strip() for e in location_exclusions.split(',')] if location_exclusions else []
             ),
             financial=FinancialCriteria(
-                revenue_min=revenue_min * 1_000_000 if revenue_min > 0 else None,
-                revenue_max=revenue_max * 1_000_000 if revenue_max > 0 else None,
+                revenue_min=revenue_min,
+                revenue_max=revenue_max,
                 revenue_currency=currency,
+                revenue_categories=revenue_categories_list,  # Add categories
                 giving_capacity_min=giving_capacity * 1_000 if giving_capacity > 0 else None
             ),
             organizational=OrganizationalCriteria(

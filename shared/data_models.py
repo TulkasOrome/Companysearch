@@ -1,7 +1,7 @@
 # shared/data_models.py
 """
 Shared data models used across all tabs
-Extracted from the main streamlit_app.py
+UPDATED: Changed to revenue categories instead of precise validation
 """
 
 from dataclasses import dataclass, field
@@ -36,6 +36,16 @@ class CompanySize(Enum):
     UNKNOWN = "unknown"
 
 
+class RevenueCategory(Enum):
+    """Revenue categories for broad classification"""
+    VERY_HIGH = "very_high"  # $1B+ or equivalent
+    HIGH = "high"  # $100M-$1B
+    MEDIUM = "medium"  # $10M-$100M
+    LOW = "low"  # $1M-$10M
+    VERY_LOW = "very_low"  # <$1M
+    UNKNOWN = "unknown"
+
+
 # ============================================================================
 # CRITERIA CLASSES
 # ============================================================================
@@ -53,10 +63,11 @@ class LocationCriteria:
 
 @dataclass
 class FinancialCriteria:
-    """Financial search criteria"""
-    revenue_min: Optional[float] = None
-    revenue_max: Optional[float] = None
+    """Financial search criteria - UPDATED with revenue categories"""
+    revenue_min: Optional[float] = None  # Still kept for UI but not used for validation
+    revenue_max: Optional[float] = None  # Still kept for UI but not used for validation
     revenue_currency: str = "USD"
+    revenue_categories: List[str] = field(default_factory=list)  # NEW: List of acceptable categories
     giving_capacity_min: Optional[float] = None
     growth_rate_min: Optional[float] = None
     profitable: Optional[bool] = None
@@ -103,11 +114,11 @@ class SearchCriteria:
 
 
 # ============================================================================
-# COMPANY ENTRY MODEL
+# COMPANY ENTRY MODEL - UPDATED WITH REVENUE CATEGORY
 # ============================================================================
 
 class EnhancedCompanyEntry(BaseModel):
-    """Complete enhanced company entry with all fields"""
+    """Complete enhanced company entry with revenue categories instead of validation"""
     # Basic info
     name: str = Field(description="Company name")
     confidence: str = Field(description="Confidence level")
@@ -122,8 +133,9 @@ class EnhancedCompanyEntry(BaseModel):
     office_locations: List[Any] = Field(default_factory=list)
     service_areas: List[str] = Field(default_factory=list)
 
-    # Financial profile
+    # Financial profile - UPDATED
     estimated_revenue: Optional[str] = Field(default=None)
+    revenue_category: Optional[str] = Field(default="unknown", description="Broad revenue category")
     revenue_currency: Optional[str] = Field(default="USD")
     estimated_employees: Optional[str] = Field(default=None)
     employees_by_location: Optional[Dict[str, str]] = Field(default=None)
@@ -160,6 +172,39 @@ class EnhancedCompanyEntry(BaseModel):
 
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def determine_revenue_categories_from_range(min_revenue: Optional[float], max_revenue: Optional[float]) -> List[str]:
+    """
+    Convert min/max revenue to acceptable revenue categories
+    """
+    categories = []
+
+    # Convert to millions if needed
+    min_m = (min_revenue / 1_000_000) if min_revenue else 0
+    max_m = (max_revenue / 1_000_000) if max_revenue else float('inf')
+
+    # Check each category
+    if max_m >= 1000:  # Can include very high
+        categories.append("very_high")
+    if min_m <= 1000 and max_m >= 100:  # Can include high
+        categories.append("high")
+    if min_m <= 100 and max_m >= 10:  # Can include medium
+        categories.append("medium")
+    if min_m <= 10 and max_m >= 1:  # Can include low
+        categories.append("low")
+    if min_m <= 1:  # Can include very low
+        categories.append("very_low")
+
+    # If no specific range, include all
+    if not categories:
+        categories = ["very_high", "high", "medium", "low", "very_low", "unknown"]
+
+    return categories
+
+
+# ============================================================================
 # ICP PROFILES MANAGER
 # ============================================================================
 
@@ -188,8 +233,8 @@ class ICPManager:
         # RMH Sydney Profile
         rmh = ICPProfile("rmh_sydney", "Ronald McDonald House Sydney")
 
-        # Tier A
-        rmh.add_tier("A", SearchCriteria(
+        # Tier A - Updated to use revenue categories
+        tier_a_criteria = SearchCriteria(
             location=LocationCriteria(
                 countries=["Australia"],
                 cities=["Sydney"],
@@ -199,6 +244,7 @@ class ICPManager:
                 revenue_min=5_000_000,
                 revenue_max=100_000_000,
                 revenue_currency="AUD",
+                revenue_categories=["medium", "high"],  # $10M-$1B range
                 giving_capacity_min=20_000
             ),
             organizational=OrganizationalCriteria(
@@ -216,10 +262,11 @@ class ICPManager:
                 {"name": "Hospitality", "priority": 3}
             ],
             excluded_industries=["Fast Food", "Gambling"]
-        ))
+        )
+        rmh.add_tier("A", tier_a_criteria)
 
         # Tier B
-        rmh.add_tier("B", SearchCriteria(
+        tier_b_criteria = SearchCriteria(
             location=LocationCriteria(
                 countries=["Australia"],
                 states=["New South Wales"]
@@ -227,7 +274,8 @@ class ICPManager:
             financial=FinancialCriteria(
                 revenue_min=2_000_000,
                 revenue_max=200_000_000,
-                revenue_currency="AUD"
+                revenue_currency="AUD",
+                revenue_categories=["low", "medium", "high"],  # $1M-$1B range
             ),
             organizational=OrganizationalCriteria(
                 employee_count_min=20
@@ -238,18 +286,24 @@ class ICPManager:
             business_types=["B2B", "B2C"],
             industries=[{"name": "Any", "priority": 1}],
             excluded_industries=["Fast Food", "Gambling"]
-        ))
+        )
+        rmh.add_tier("B", tier_b_criteria)
 
         # Tier C
-        rmh.add_tier("C", SearchCriteria(
+        tier_c_criteria = SearchCriteria(
             location=LocationCriteria(countries=["Australia"]),
-            financial=FinancialCriteria(revenue_min=1_000_000, revenue_currency="AUD"),
+            financial=FinancialCriteria(
+                revenue_min=1_000_000,
+                revenue_currency="AUD",
+                revenue_categories=["low", "medium", "high", "very_high"],  # $1M+ range
+            ),
             organizational=OrganizationalCriteria(),
             behavioral=BehavioralSignals(),
             business_types=["B2B", "B2C"],
             industries=[],
             excluded_industries=["Fast Food", "Gambling"]
-        ))
+        )
+        rmh.add_tier("C", tier_c_criteria)
 
         self.profiles["rmh_sydney"] = rmh
 
@@ -257,7 +311,7 @@ class ICPManager:
         gdv = ICPProfile("guide_dogs_victoria", "Guide Dogs Victoria")
 
         # Tier A
-        gdv.add_tier("A", SearchCriteria(
+        tier_a_gdv = SearchCriteria(
             location=LocationCriteria(
                 countries=["Australia"],
                 states=["Victoria"],
@@ -265,7 +319,8 @@ class ICPManager:
             ),
             financial=FinancialCriteria(
                 revenue_min=500_000_000,
-                revenue_currency="AUD"
+                revenue_currency="AUD",
+                revenue_categories=["high", "very_high"],  # $100M+ range
             ),
             organizational=OrganizationalCriteria(
                 employee_count_min=500,
@@ -283,10 +338,11 @@ class ICPManager:
                 {"name": "Technology", "priority": 3}
             ],
             excluded_industries=["Gambling", "Tobacco", "Racing"]
-        ))
+        )
+        gdv.add_tier("A", tier_a_gdv)
 
         # Tier B
-        gdv.add_tier("B", SearchCriteria(
+        tier_b_gdv = SearchCriteria(
             location=LocationCriteria(
                 countries=["Australia"],
                 states=["Victoria"]
@@ -294,7 +350,8 @@ class ICPManager:
             financial=FinancialCriteria(
                 revenue_min=50_000_000,
                 revenue_max=500_000_000,
-                revenue_currency="AUD"
+                revenue_currency="AUD",
+                revenue_categories=["medium", "high"],  # $10M-$1B range
             ),
             organizational=OrganizationalCriteria(
                 employee_count_min=100,
@@ -306,17 +363,19 @@ class ICPManager:
             business_types=["B2B", "B2C"],
             industries=[{"name": "Any", "priority": 1}],
             excluded_industries=["Gambling", "Tobacco"]
-        ))
+        )
+        gdv.add_tier("B", tier_b_gdv)
 
         # Tier C
-        gdv.add_tier("C", SearchCriteria(
+        tier_c_gdv = SearchCriteria(
             location=LocationCriteria(
                 countries=["Australia"],
                 states=["Victoria"]
             ),
             financial=FinancialCriteria(
                 revenue_min=10_000_000,
-                revenue_currency="AUD"
+                revenue_currency="AUD",
+                revenue_categories=["medium", "high", "very_high"],  # $10M+ range
             ),
             organizational=OrganizationalCriteria(
                 employee_count_min=50
@@ -325,7 +384,8 @@ class ICPManager:
             business_types=["B2B", "B2C"],
             industries=[],
             excluded_industries=["Gambling", "Tobacco"]
-        ))
+        )
+        gdv.add_tier("C", tier_c_gdv)
 
         self.profiles["guide_dogs_victoria"] = gdv
 

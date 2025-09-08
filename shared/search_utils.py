@@ -134,7 +134,7 @@ class EnhancedSearchStrategistAgent:
             target_count: int,
             unique_instructions: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Build prompt with unique instructions to avoid duplicates"""
+        """Build prompt with revenue categories instead of precise ranges"""
         prompt_parts = []
 
         # Add uniqueness instructions FIRST and PROMINENTLY
@@ -242,15 +242,35 @@ class EnhancedSearchStrategistAgent:
                 locations.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
             prompt_parts.append("LOCATION: " + "; ".join(locations))
 
-        # Financial - NOTE: We'll validate this with Serper later
+        # UPDATED: Financial with revenue categories
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
-            if criteria.financial.revenue_min and criteria.financial.revenue_max:
+            # Convert to categories
+            from shared.data_models import determine_revenue_categories_from_range
+            categories = determine_revenue_categories_from_range(
+                criteria.financial.revenue_min,
+                criteria.financial.revenue_max
+            )
+
+            # Build revenue instruction
+            revenue_instruction = "REVENUE CATEGORY: Find companies with "
+
+            category_descriptions = {
+                "very_high": "VERY HIGH revenue (typically $1B+ or major enterprises)",
+                "high": "HIGH revenue (typically $100M-$1B, large established companies)",
+                "medium": "MEDIUM revenue (typically $10M-$100M, successful mid-market)",
+                "low": "LOW revenue (typically $1M-$10M, smaller businesses)",
+                "very_low": "VERY LOW revenue (typically <$1M, startups/small local)"
+            }
+
+            included_descriptions = [category_descriptions[cat] for cat in categories if cat in category_descriptions]
+
+            if included_descriptions:
+                revenue_instruction += " OR ".join(included_descriptions)
+                prompt_parts.append(revenue_instruction)
                 prompt_parts.append(
-                    f"REVENUE: ${int(criteria.financial.revenue_min / 1e6)}-{int(criteria.financial.revenue_max / 1e6)}M {criteria.financial.revenue_currency}")
-            elif criteria.financial.revenue_min:
+                    f"IMPORTANT: Use your knowledge of company sizes and industries to estimate revenue categories")
                 prompt_parts.append(
-                    f"REVENUE: >${int(criteria.financial.revenue_min / 1e6)}M {criteria.financial.revenue_currency}")
-            prompt_parts.append("NOTE: Cast a wide net - we'll validate revenue later")
+                    f"Consider: employee count, office locations, industry norms, company age, market presence")
 
         # Employees
         if criteria.organizational.employee_count_min:
@@ -278,20 +298,36 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.append(
                 f"⚠️ Your specific role: {unique_instructions.get('segment_description', 'Follow instructions above')}")
 
-        # REDUCED JSON FORMAT - fewer fields to save tokens
-        prompt_parts.append("\nReturn JSON with ESSENTIAL fields only:")
+        # UPDATED JSON FORMAT with revenue_category
+        prompt_parts.append("\nReturn JSON with fields:")
         prompt_parts.append("""{"companies":[{
-"name":"Company Name",
-"confidence":"high",
-"operates_in_country":true,
-"business_type":"B2B",
-"industry_category":"Industry",
-"reasoning":"Brief reason",
-"estimated_revenue":"50-100M",
-"estimated_employees":"100-500",
-"headquarters":{"city":"City"},
-"csr_focus_areas":["area1"]
-}]}""")
+    "name":"Company Name",
+    "confidence":"high",
+    "operates_in_country":true,
+    "business_type":"B2B",
+    "industry_category":"Industry",
+    "reasoning":"Brief reason",
+    "estimated_revenue":"Descriptive range like '50-100M' or 'Large enterprise'",
+    "revenue_category":"medium",
+    "estimated_employees":"100-500",
+    "headquarters":{"city":"City"},
+    "csr_focus_areas":["area1"]
+    }]}
+
+    REVENUE CATEGORIES:
+    - "very_high": $1B+ revenue, Fortune 500, major enterprises
+    - "high": $100M-$1B, large established companies, market leaders
+    - "medium": $10M-$100M, successful mid-market, regional leaders  
+    - "low": $1M-$10M, smaller businesses, local operations
+    - "very_low": <$1M, startups, micro businesses
+    - "unknown": Cannot determine
+
+    Estimate revenue_category based on:
+    - Employee count (1000+ often = high/very_high, 100-1000 = medium/high, <100 = low/medium)
+    - Number of offices/locations (multiple = higher revenue)
+    - Industry norms (banks/insurance = higher, local services = lower)
+    - Market presence and brand recognition
+    - Company age and maturity""")
 
         return "\n".join(prompt_parts)
 
@@ -383,6 +419,13 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
     """
     Validate a single company's revenue using Serper
     Returns: (company, meets_criteria)
+
+    LOGIC:
+    1. Searches for company revenue using multiple query formats
+    2. Parses search results to extract revenue mentions
+    3. Compares found revenue against criteria min/max
+    4. Updates company object with verified revenue data
+    5. Returns whether company meets revenue criteria
     """
     try:
         async with aiohttp.ClientSession() as session:
@@ -391,6 +434,10 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
             currency = criteria.financial.revenue_currency
 
             # Try multiple query formats for better results
+            # These queries are designed to find:
+            # 1. Direct revenue statements
+            # 2. Annual reports
+            # 3. Financial news
             queries = [
                 f'"{company_name}" annual revenue {currency} million',
                 f'"{company_name}" revenue turnover {currency}',
@@ -398,6 +445,7 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
             ]
 
             verified_revenue = None
+            revenue_source = None
 
             for query in queries:
                 url = "https://google.serper.dev/search"
@@ -422,6 +470,10 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
                             combined = f"{title} {snippet}".lower()
 
                             # Look for revenue patterns
+                            # These patterns capture common revenue formats:
+                            # - $XXX million/billion
+                            # - Revenue of XXX million
+                            # - Annual revenue/turnover/sales XXX million
                             revenue_patterns = [
                                 r'\$?([\d,]+\.?\d*)\s*(million|billion|m|b)\s*(revenue|turnover|sales)?',
                                 r'(revenue|turnover|sales)[:\s]+\$?([\d,]+\.?\d*)\s*(million|billion|m|b)',
@@ -453,6 +505,7 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
                                                                 amount *= 1000  # Convert to millions
 
                                                             verified_revenue = amount
+                                                            revenue_source = item.get('link', 'web search')
                                                             break
 
                                             if verified_revenue:
@@ -465,19 +518,25 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
 
                             if verified_revenue:
                                 # Update company with verified revenue
-                                # Handle both Pydantic models and dictionaries
-                                if hasattr(company, '__setattr__'):
-                                    # Pydantic model - use setattr
-                                    setattr(company, 'verified_revenue', f"${verified_revenue:.0f}M {currency}")
-                                    setattr(company, 'revenue_validated', True)
-                                    setattr(company, 'revenue_validation_source', "serper_web_search")
+                                # For Pydantic models, we need to create a new instance with updated values
+                                if hasattr(company, '__class__') and hasattr(company.__class__, '__fields__'):
+                                    # It's a Pydantic model
+                                    # Get current values as dict
+                                    company_dict = company.dict()
+                                    # Update with verified revenue
+                                    company_dict['verified_revenue'] = f"${verified_revenue:.0f}M {currency}"
+                                    company_dict['revenue_validated'] = True
+                                    company_dict['revenue_validation_source'] = "serper_web_search"
+                                    # Create new instance with updated values
+                                    company = company.__class__(**company_dict)
                                 else:
                                     # Dictionary - use item assignment
                                     company['verified_revenue'] = f"${verified_revenue:.0f}M {currency}"
                                     company['revenue_validated'] = True
                                     company['revenue_validation_source'] = "serper_web_search"
 
-                                print(f"  ✓ {company_name}: ${verified_revenue:.0f}M {currency}")
+                                print(
+                                    f"  ✓ {company_name}: ${verified_revenue:.0f}M {currency} (from {revenue_source})")
 
                                 # Check if it meets criteria
                                 meets_min = True
@@ -497,21 +556,34 @@ async def validate_company_revenue(company: Any, criteria: SearchCriteria, serpe
             # If no revenue found, mark as unverified but keep the company
             if not verified_revenue:
                 print(f"  ? {company_name}: Revenue not found")
-                # Handle both Pydantic models and dictionaries
-                if hasattr(company, '__setattr__'):
-                    # Pydantic model - use setattr
-                    setattr(company, 'revenue_validated', False)
-                    setattr(company, 'revenue_validation_source', "not_found")
+
+                # Update company to indicate validation was attempted but no revenue found
+                if hasattr(company, '__class__') and hasattr(company.__class__, '__fields__'):
+                    # It's a Pydantic model
+                    company_dict = company.dict()
+                    company_dict['revenue_validated'] = False
+                    company_dict['revenue_validation_source'] = "not_found"
+                    company = company.__class__(**company_dict)
                 else:
-                    # Dictionary - use item assignment
+                    # Dictionary
                     company['revenue_validated'] = False
                     company['revenue_validation_source'] = "not_found"
 
                 # Keep companies where revenue couldn't be verified (might be private companies)
+                # This is important because many legitimate companies don't have public revenue data
                 return company, True  # Assume they meet criteria if we can't verify
 
     except Exception as e:
         print(f"  ✗ Failed to validate {company_name}: {e}")
+        # On error, keep the company but mark as not validated
+        if hasattr(company, '__class__') and hasattr(company.__class__, '__fields__'):
+            company_dict = company.dict()
+            company_dict['revenue_validated'] = False
+            company_dict['revenue_validation_source'] = "error"
+            company = company.__class__(**company_dict)
+        else:
+            company['revenue_validated'] = False
+            company['revenue_validation_source'] = "error"
         return company, True  # Keep on error
 
 
@@ -762,26 +834,25 @@ async def execute_parallel_search(
         models: List[str],
         criteria: SearchCriteria,
         target_count: int,
-        serper_key: Optional[str] = None
+        serper_key: Optional[str] = None  # No longer used but kept for compatibility
 ) -> Dict[str, Any]:
-    """Execute search across multiple models - TRUE PARALLEL EXECUTION with revenue validation"""
+    """Execute search across multiple models - SIMPLIFIED without revenue validation"""
 
     print(f"\n{'=' * 60}")
-    print(f"TRUE PARALLEL SEARCH WITH REVENUE VALIDATION")
+    print(f"PARALLEL SEARCH - REVENUE CATEGORIES")
     print(f"{'=' * 60}")
     print(f"Target: {target_count} companies across {len(models)} models")
 
-    # Check if revenue validation is needed
-    needs_revenue_validation = (
-            serper_key and
-            (criteria.financial.revenue_min is not None or criteria.financial.revenue_max is not None)
-    )
+    # Show revenue categories if specified
+    if criteria.financial.revenue_min or criteria.financial.revenue_max:
+        from shared.data_models import determine_revenue_categories_from_range
+        categories = determine_revenue_categories_from_range(
+            criteria.financial.revenue_min,
+            criteria.financial.revenue_max
+        )
+        print(f"Revenue Categories: {', '.join(categories)}")
 
-    if needs_revenue_validation:
-        print(
-            f"Revenue Validation: ENABLED (min: ${criteria.financial.revenue_min / 1e6:.0f}M, max: ${criteria.financial.revenue_max / 1e6:.0f}M)")
-    else:
-        print(f"Revenue Validation: DISABLED")
+    print(f"{'=' * 60}\n")
 
     # Determine strategy for large scale
     strategy, strategy_description, strategy_params = determine_scale_strategy(
@@ -845,8 +916,34 @@ async def execute_parallel_search(
                 )
 
                 companies = result.get('companies', [])
+
+                # Filter by revenue category if specified
+                if criteria.financial.revenue_min or criteria.financial.revenue_max:
+                    from shared.data_models import determine_revenue_categories_from_range
+                    acceptable_categories = determine_revenue_categories_from_range(
+                        criteria.financial.revenue_min,
+                        criteria.financial.revenue_max
+                    )
+
+                    filtered_companies = []
+                    for company in companies:
+                        # Get revenue category from company
+                        if hasattr(company, 'revenue_category'):
+                            rev_cat = company.revenue_category
+                        else:
+                            rev_cat = company.get('revenue_category', 'unknown')
+
+                        # Keep if in acceptable categories or unknown
+                        if rev_cat in acceptable_categories or rev_cat == 'unknown':
+                            filtered_companies.append(company)
+                        else:
+                            print(
+                                f"    Filtered out {company.name if hasattr(company, 'name') else company.get('name', '')} - revenue category: {rev_cat}")
+
+                    companies = filtered_companies
+
                 model_companies.extend(companies)
-                print(f"  {model} - Call {call_num}: Found {len(companies)} companies")
+                print(f"  {model} - Call {call_num}: Found {len(companies)} companies (Total: {len(model_companies)})")
 
                 if len(companies) < call_target:
                     print(f"  {model} - WARNING: Got fewer than requested ({len(companies)}/{call_target})")
@@ -911,55 +1008,6 @@ async def execute_parallel_search(
         all_companies.extend(companies)
         model_stats[model] = stats
 
-    # Revenue validation if criteria requires it
-    revenue_validated_companies = []
-    companies_removed_by_revenue = 0
-
-    if needs_revenue_validation and all_companies:
-        print(f"\n{'=' * 60}")
-        print(f"💰 REVENUE VALIDATION PHASE")
-        print(f"{'=' * 60}")
-        print(f"Validating revenue for {len(all_companies)} companies...")
-        print(
-            f"Criteria: ${criteria.financial.revenue_min / 1e6:.0f}M - ${criteria.financial.revenue_max / 1e6:.0f}M {criteria.financial.revenue_currency}")
-
-        # Validate all companies in parallel batches
-        validation_batch_size = 10  # Process 10 at a time to avoid rate limits
-
-        for i in range(0, len(all_companies), validation_batch_size):
-            batch = all_companies[i:i + validation_batch_size]
-            print(f"\nValidating batch {i // validation_batch_size + 1} ({len(batch)} companies)...")
-
-            # Create validation tasks for this batch
-            validation_tasks = [
-                validate_company_revenue(company, criteria, serper_key)
-                for company in batch
-            ]
-
-            # Execute batch validations
-            batch_results = await asyncio.gather(*validation_tasks, return_exceptions=False)
-
-            # Process results
-            for company, meets_criteria in batch_results:
-                if meets_criteria:
-                    revenue_validated_companies.append(company)
-                else:
-                    companies_removed_by_revenue += 1
-                    print(
-                        f"  ✗ Removed: {company.name if hasattr(company, 'name') else company.get('name', '')} (doesn't meet revenue criteria)")
-
-            # Rate limiting between batches
-            if i + validation_batch_size < len(all_companies):
-                await asyncio.sleep(0.5)
-
-        print(f"\n💰 Revenue Validation Complete:")
-        print(f"  - Companies validated: {len(all_companies)}")
-        print(f"  - Companies meeting criteria: {len(revenue_validated_companies)}")
-        print(f"  - Companies removed: {companies_removed_by_revenue}")
-
-        # Use validated companies
-        all_companies = revenue_validated_companies
-
     # Deduplication
     print(f"\n{'=' * 60}")
     print("Deduplication Phase")
@@ -991,17 +1039,13 @@ async def execute_parallel_search(
         unique_companies = unique_companies[:target_count]
 
     # Calculate final statistics
-    total_found_before_validation = sum(len(r['companies']) for r in results)
-    total_after_validation = len(all_companies) if needs_revenue_validation else total_found_before_validation
+    total_found = len(all_companies)
     total_unique = len(unique_companies)
-    duplicates_removed = len(all_companies) - total_unique
-    dedup_rate = (duplicates_removed / len(all_companies) * 100) if all_companies else 0
+    duplicates_removed = total_found - total_unique
+    dedup_rate = (duplicates_removed / total_found * 100) if total_found else 0
     achievement_rate = (total_unique / target_count * 100) if target_count > 0 else 0
 
-    print(f"Total found (before validation): {total_found_before_validation}")
-    if needs_revenue_validation:
-        print(f"After revenue validation: {total_after_validation}")
-        print(f"Removed by revenue criteria: {companies_removed_by_revenue}")
+    print(f"Total found: {total_found}")
     print(f"Unique companies: {total_unique}")
     print(f"Duplicates removed: {duplicates_removed} ({dedup_rate:.1f}%)")
     print(f"Target achievement: {total_unique}/{target_count} ({achievement_rate:.1f}%)")
@@ -1030,16 +1074,14 @@ async def execute_parallel_search(
             'strategy_description': strategy_description,
             'models_used': models,
             'model_stats': model_stats,
-            'total_companies_before_validation': total_found_before_validation,
-            'total_companies_after_validation': total_after_validation,
-            'companies_removed_by_revenue': companies_removed_by_revenue if needs_revenue_validation else 0,
+            'total_companies_found': total_found,
             'total_companies_after_dedup': total_unique,
             'duplicates_removed': duplicates_removed,
             'deduplication_rate': dedup_rate,
             'target_count': target_count,
             'target_achievement_rate': achievement_rate,
             'total_api_calls': sum(s['calls_made'] for s in model_stats.values()),
-            'revenue_validated': needs_revenue_validation,
+            'revenue_validation': False,  # No longer doing validation
             'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S")
         }
     }

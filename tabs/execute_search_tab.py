@@ -1,7 +1,8 @@
 # tabs/execute_search_tab.py
 """
-Execute Search Tab - With revenue validation and true parallel execution
-FIXED: Proper async handling for Streamlit environment
+Execute Search Tab - With recursive approach to ensure target count
+REMOVED: All revenue validation references
+ADDED: Recursive search to meet target count
 """
 
 import streamlit as st
@@ -11,16 +12,20 @@ import time
 import traceback
 import nest_asyncio
 import concurrent.futures
+import io
+import sys
+import json
 from datetime import datetime
-from shared.search_utils import execute_parallel_search, EnhancedSearchStrategistAgent
+from typing import Dict, Any, List
 from shared.session_state import update_cost
+from dataclasses import asdict
 
 # Apply nest_asyncio to allow nested event loops in Streamlit
 nest_asyncio.apply()
 
 
 def render_execute_search_tab():
-    """Render the Execute Search tab with revenue validation"""
+    """Render the Execute Search tab with recursive search"""
 
     st.header("Execute Company Search")
 
@@ -41,9 +46,8 @@ def render_execute_search_tab():
 
             with col2:
                 st.markdown("**Financial:**")
-                if criteria.financial.revenue_min:
-                    st.write(f"Revenue: ${criteria.financial.revenue_min / 1e6:.0f}M+")
-                    st.write("🔍 *Will validate with Serper*")
+                if criteria.financial.revenue_categories:
+                    st.write(f"Revenue: {', '.join(criteria.financial.revenue_categories)}")
                 if criteria.organizational.employee_count_min:
                     st.write(f"Employees: {criteria.organizational.employee_count_min}+")
 
@@ -118,26 +122,12 @@ def render_execute_search_tab():
         target_count = target_count_input
         st.session_state.target_count = target_count
 
-        # Check if revenue validation will be used
-        has_revenue_criteria = (
-                st.session_state.current_criteria.financial.revenue_min is not None or
-                st.session_state.current_criteria.financial.revenue_max is not None
+        # Recursive search option
+        enable_recursive = st.checkbox(
+            "🔄 Enable Recursive Search",
+            value=True,
+            help="If not enough companies are found, automatically relax criteria and search again"
         )
-
-        # Get Serper key from sidebar session state
-        serper_key = st.session_state.get('serper_api_key', "99c44b79892f5f7499accf2d7c26d93313880937")
-
-        # Revenue validation info box
-        if has_revenue_criteria:
-            st.info(
-                f"💰 **Revenue Validation Enabled**\n\n"
-                f"Companies will be validated against your revenue criteria "
-                f"(${st.session_state.current_criteria.financial.revenue_min / 1e6:.0f}M - "
-                f"${st.session_state.current_criteria.financial.revenue_max / 1e6:.0f}M) "
-                f"using Serper web search.\n\n"
-                f"This ensures accurate revenue data but will use additional Serper credits "
-                f"(~1 credit per company)."
-            )
 
         # Compact metrics row
         col1, col2, col3 = st.columns(3)
@@ -154,28 +144,14 @@ def render_execute_search_tab():
             # Single model: sequential calls
             estimated_time = total_calls * 12  # 12 seconds per call
 
-        # Add time for revenue validation if needed
-        if has_revenue_criteria:
-            # Estimate 1 second per company for validation (batched)
-            estimated_time += (target_count // 10) * 2
-
         estimated_cost = total_calls * 0.02
-
-        # Add Serper cost if revenue validation
-        if has_revenue_criteria:
-            serper_cost = target_count * 0.001  # $0.001 per company for validation
-            estimated_cost += serper_cost
 
         with col1:
             st.caption("Target")
             st.markdown(f"**{target_count:,}**")
         with col2:
             st.caption("Est. Cost")
-            if has_revenue_criteria:
-                st.markdown(f"**${estimated_cost:.2f}**")
-                st.caption(f"(incl. Serper)")
-            else:
-                st.markdown(f"**${estimated_cost:.2f}**")
+            st.markdown(f"**${estimated_cost:.2f}**")
         with col3:
             st.caption("Est. Time")
             minutes = estimated_time // 60
@@ -214,9 +190,6 @@ def render_execute_search_tab():
 
                 st.info("All models use your full criteria while focusing on their segments.")
 
-                if has_revenue_criteria:
-                    st.write(f"✓ **Revenue Validation**: All companies will be validated via Serper")
-
         st.divider()
 
         # Single execution button
@@ -226,7 +199,7 @@ def render_execute_search_tab():
                     type="primary",
                     use_container_width=True
             ):
-                execute_search(target_count, total_calls, estimated_cost, search_mode, serper_key, has_revenue_criteria)
+                execute_search(target_count, total_calls, estimated_cost, search_mode, enable_recursive)
         else:
             st.button(
                 f"🚀 Search Disabled - Enable Parallel Execution",
@@ -242,362 +215,373 @@ def render_execute_search_tab():
                     st.write(f"**Search {len(st.session_state.search_history) - i}:** "
                              f"{search['count']} companies, "
                              f"{search['timestamp']}, "
-                             f"Found: {search['found']}, "
-                             f"Revenue Validated: {search.get('revenue_validated', False)}")
+                             f"Found: {search['found']}")
 
         # Display results
         display_search_results()
 
 
-def execute_search(target_count, total_calls, estimated_cost, search_mode, serper_key, has_revenue_criteria):
-    """Execute the search with progress tracking and live logging"""
+def relax_criteria(criteria, relaxation_level: int):
+    """
+    Progressively relax search criteria
+    Level 1: Remove CSR requirements
+    Level 2: Expand revenue categories
+    Level 3: Remove industry restrictions
+    Level 4: Expand geographic scope
+    Level 5: Lower employee minimums
+    """
+    import copy
+    from shared.data_models import SearchCriteria, determine_revenue_categories_from_range
+
+    relaxed = copy.deepcopy(criteria)
+
+    if relaxation_level >= 1:
+        # Remove CSR requirements
+        relaxed.behavioral.csr_focus_areas = []
+        relaxed.behavioral.certifications = []
+        relaxed.behavioral.recent_events = []
+        relaxed.behavioral.esg_maturity = None
+
+    if relaxation_level >= 2:
+        # Expand revenue categories
+        if relaxed.financial.revenue_min or relaxed.financial.revenue_max:
+            # Widen by one category on each side
+            if relaxed.financial.revenue_min and relaxed.financial.revenue_min > 1_000_000:
+                relaxed.financial.revenue_min = max(0, relaxed.financial.revenue_min / 10)
+            if relaxed.financial.revenue_max and relaxed.financial.revenue_max < 10_000_000_000:
+                relaxed.financial.revenue_max = min(10_000_000_000, relaxed.financial.revenue_max * 10)
+            # Recalculate categories
+            relaxed.financial.revenue_categories = determine_revenue_categories_from_range(
+                relaxed.financial.revenue_min,
+                relaxed.financial.revenue_max
+            )
+
+    if relaxation_level >= 3:
+        # Remove industry restrictions
+        relaxed.industries = []
+        relaxed.excluded_industries = []
+
+    if relaxation_level >= 4:
+        # Expand geographic scope
+        if relaxed.location.cities:
+            # Move cities to states
+            relaxed.location.states = list(set(relaxed.location.states + ["Any"]))
+            relaxed.location.cities = []
+        elif relaxed.location.states:
+            # Remove state restrictions
+            relaxed.location.states = []
+
+    if relaxation_level >= 5:
+        # Lower employee minimums
+        if relaxed.organizational.employee_count_min:
+            relaxed.organizational.employee_count_min = max(1, relaxed.organizational.employee_count_min // 2)
+
+    return relaxed
+
+
+def run_parallel_search_wrapper(selected_models, current_criteria, target_count):
+    """
+    Wrapper function to run parallel search in a separate thread.
+    This function runs in a thread pool and returns results without updating UI.
+    """
+    # Import here to avoid circular imports
+    from shared.search_utils import execute_parallel_search
+
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        # Run the async function and capture ALL output
+        result = loop.run_until_complete(
+            execute_parallel_search(
+                selected_models,
+                current_criteria,
+                target_count,
+                serper_key=None  # No longer needed
+            )
+        )
+        return result
+    finally:
+        loop.close()
+
+
+def run_single_search(agent, criteria, target_count):
+    """Run a single search call in a separate event loop"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(
+            agent.generate_enhanced_strategy(
+                criteria,
+                target_count=target_count
+            )
+        )
+    finally:
+        loop.close()
+
+
+def execute_search(target_count, total_calls, estimated_cost, search_mode, enable_recursive):
+    """Execute the search with progress tracking and recursive approach"""
 
     # Initialize progress tracking
     progress_bar = st.progress(0)
     status_placeholder = st.empty()
-
-    # Create a container for live logs - using st.empty() and code block
-    log_container = st.container()
-    log_placeholder = log_container.empty()
-    logs = []
-
-    def add_log(message):
-        """Add a log message to the display"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        logs.append(f"[{timestamp}] {message}")
-        # Keep only last 20 logs for display
-        display_logs = logs[-20:]
-        log_text = "\n".join(display_logs)
-        # Use code block to avoid widget key issues
-        log_placeholder.code(log_text, language=None)
 
     # Store existing results if adding
     existing_results = []
     if "Add to Existing" in search_mode and st.session_state.search_results:
         existing_results = st.session_state.search_results.copy()
         status_placeholder.info(f"Adding to existing {len(existing_results):,} companies...")
-        add_log(f"Mode: Adding to existing {len(existing_results):,} companies")
     else:
         # Clear for new search
         st.session_state.search_results = []
         st.session_state.all_search_results = []
-        add_log("Mode: New search - clearing existing results")
 
     # Clear model tracking
     st.session_state.model_results = {}
     st.session_state.model_execution_times = {}
     st.session_state.model_success_status = {}
 
-    if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
-        # PARALLEL EXECUTION - FIXED VERSION
-        status_placeholder.info(
-            f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models..."
-        )
-        add_log(f"Starting TRUE PARALLEL search with {len(st.session_state.selected_models)} models")
-        add_log(f"Target: {target_count:,} companies")
+    # Recursive search implementation
+    all_found_companies = []
+    relaxation_level = 0
+    max_relaxation = 5
+    search_attempts = []
 
-        if has_revenue_criteria:
-            add_log(f"Revenue validation: ENABLED")
+    current_criteria = st.session_state.current_criteria
+    remaining_target = target_count
 
-        try:
-            start_time = time.time()
+    while remaining_target > 0 and relaxation_level <= max_relaxation:
 
-            # Capture logs from the parallel search by monkey-patching print
-            original_print = print
+        if relaxation_level > 0:
+            status_placeholder.info(f"🔄 Relaxing criteria (Level {relaxation_level}) to find more companies...")
+            current_criteria = relax_criteria(st.session_state.current_criteria, relaxation_level)
 
-            def logged_print(*args, **kwargs):
-                message = " ".join(str(arg) for arg in args)
-                add_log(message)
-                original_print(*args, **kwargs)
+        # Execute search with current criteria
+        if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
+            # PARALLEL EXECUTION
+            status_placeholder.info(
+                f"🚀 Searching for {remaining_target:,} companies using {len(st.session_state.selected_models)} models..."
+                + (f" (Attempt {relaxation_level + 1})" if relaxation_level > 0 else "")
+            )
 
-            # Temporarily replace print
-            import builtins
-            builtins.print = logged_print
+            try:
+                start_time = time.time()
 
-            add_log("Initializing parallel execution...")
+                # Extract values from session state BEFORE passing to thread
+                selected_models = st.session_state.selected_models.copy()
 
-            # FIXED: Use ThreadPoolExecutor to run async code in a separate thread
-            # This avoids event loop conflicts with Streamlit
-            def run_async_search():
-                """Run the async search in a new event loop in a thread"""
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return loop.run_until_complete(
-                        execute_parallel_search(
-                            st.session_state.selected_models,
-                            st.session_state.current_criteria,
-                            target_count,
-                            serper_key=serper_key if has_revenue_criteria else None
-                        )
+                # Execute the parallel search in a thread pool
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    # Submit the job
+                    future = executor.submit(
+                        run_parallel_search_wrapper,
+                        selected_models,
+                        current_criteria,
+                        remaining_target
                     )
-                finally:
-                    loop.close()
 
-            # Execute in a thread to avoid blocking Streamlit's event loop
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_async_search)
-                result = future.result()  # This will block until complete
+                    # Show progress while waiting
+                    while not future.done():
+                        # Update progress bar
+                        elapsed = time.time() - start_time
+                        estimated_progress = min(elapsed / 30, 0.9)  # Assume ~30 seconds max
+                        progress_bar.progress(estimated_progress)
+                        time.sleep(0.5)
 
-            # Restore original print
-            builtins.print = original_print
+                    # Get the result
+                    result = future.result()
 
-            execution_time = time.time() - start_time
-            add_log(f"Search completed in {execution_time:.1f} seconds")
+                execution_time = time.time() - start_time
 
-            # Extract results
-            new_companies = result.get('companies', [])
-            metadata = result.get('metadata', {})
+                # Extract results
+                new_companies = result.get('companies', [])
+                metadata = result.get('metadata', {})
 
-            # Log revenue validation results if applicable
-            if has_revenue_criteria and metadata.get('revenue_validated'):
-                add_log(f"Revenue validation complete:")
-                add_log(f"  - Companies before validation: {metadata.get('total_companies_before_validation', 0)}")
-                add_log(f"  - Companies after validation: {metadata.get('total_companies_after_validation', 0)}")
-                add_log(f"  - Removed by revenue: {metadata.get('companies_removed_by_revenue', 0)}")
+                # Store attempt info
+                search_attempts.append({
+                    'relaxation_level': relaxation_level,
+                    'found': len(new_companies),
+                    'time': execution_time
+                })
 
-            # Handle existing results
-            if existing_results:
-                # Combine and deduplicate
-                all_companies = existing_results + new_companies
-
-                # Deduplicate
+                # Deduplicate with already found companies
                 seen_names = set()
-                seen_name_cores = set()
-                unique_companies = []
-                duplicates_with_existing = 0
+                for company in all_found_companies:
+                    if hasattr(company, 'name'):
+                        seen_names.add(company.name.lower().strip())
+                    else:
+                        seen_names.add(company.get('name', '').lower().strip())
 
-                for company in all_companies:
+                unique_new = []
+                for company in new_companies:
                     if hasattr(company, 'name'):
                         company_name = company.name.lower().strip()
                     else:
                         company_name = company.get('name', '').lower().strip()
 
-                    # Create core name
-                    name_core = company_name
-                    for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp']:
-                        name_core = name_core.replace(suffix, '').strip()
-
-                    if name_core not in seen_name_cores and company_name not in seen_names:
+                    if company_name not in seen_names:
                         seen_names.add(company_name)
-                        seen_name_cores.add(name_core)
-                        unique_companies.append(company)
-                    elif company in existing_results:
-                        # Skip existing
-                        unique_companies.append(company)
-                    else:
-                        duplicates_with_existing += 1
+                        unique_new.append(company)
 
-                st.session_state.search_results = unique_companies
-                new_unique_count = len(unique_companies) - len(existing_results)
+                all_found_companies.extend(unique_new)
+                remaining_target = target_count - len(all_found_companies)
 
-                add_log(f"✅ Added {new_unique_count} new unique companies")
-                add_log(f"Total: {len(unique_companies):,} companies")
-                add_log(f"Duplicates removed: {duplicates_with_existing}")
-
-                # Clear the log area and show success
-                log_placeholder.empty()
                 status_placeholder.success(
-                    f"✅ Added {new_unique_count} new unique companies!\n"
-                    f"Total: {len(unique_companies):,} companies\n"
-                    f"Duplicates with existing: {duplicates_with_existing}"
+                    f"Found {len(unique_new)} new unique companies. "
+                    f"Total: {len(all_found_companies)}/{target_count}"
                 )
-            else:
-                # New search
-                st.session_state.search_results = new_companies
-                add_log(f"✅ Found {len(new_companies):,} unique companies")
 
-                # Clear the log area and show success
-                log_placeholder.empty()
+                # Check if we should continue
+                if not enable_recursive or remaining_target <= 0:
+                    break
 
-                success_message = f"✅ Found {len(new_companies):,} unique companies in {execution_time:.1f} seconds!"
-                if has_revenue_criteria and metadata.get('revenue_validated'):
-                    success_message += f"\n💰 Revenue validated: {metadata.get('companies_removed_by_revenue', 0)} companies removed"
-
-                status_placeholder.success(success_message)
-
-            # Update session state
-            st.session_state.model_success_status = metadata.get('model_stats', {})
-
-            # Track search in history
-            st.session_state.search_history.append({
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
-                'count': target_count,
-                'found': len(new_companies),
-                'mode': search_mode.split()[0],
-                'revenue_validated': has_revenue_criteria,
-                'criteria_hash': hash(str(st.session_state.current_criteria))
-            })
-
-            # Calculate actual cost
-            actual_calls = metadata.get('total_api_calls', total_calls)
-            actual_cost = actual_calls * 0.02
-
-            # Add Serper cost if revenue was validated
-            if has_revenue_criteria and metadata.get('revenue_validated'):
-                serper_credits = metadata.get('total_companies_before_validation', 0)
-                serper_cost = serper_credits * 0.001
-                actual_cost += serper_cost
-                add_log(f"Total cost: ${actual_cost:.3f} (GPT: ${actual_calls * 0.02:.3f}, Serper: ${serper_cost:.3f})")
-
-            update_cost(actual_cost)
-
-            progress_bar.progress(1.0)
-
-        except Exception as e:
-            add_log(f"❌ Search failed: {str(e)}")
-            st.error(f"Search failed: {str(e)}")
-            traceback.print_exc()
-
-    else:
-        # SINGLE MODEL EXECUTION
-        if target_count > 500:
-            st.error("Single model cannot handle more than 500 companies.")
-        else:
-            status_placeholder.info(f"Searching with {st.session_state.selected_models[0]}...")
-            add_log(f"Starting single model search with {st.session_state.selected_models[0]}")
-
-            if has_revenue_criteria:
-                add_log(f"Revenue validation: ENABLED")
-
-            try:
-                agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
-
-                all_companies = []
-                calls_needed = (target_count + 14) // 15  # Updated for 15 companies per call
-
-                for call_num in range(calls_needed):
-                    call_target = min(15, target_count - len(all_companies))
-                    progress = (call_num + 1) / calls_needed
-                    progress_bar.progress(progress * 0.7)  # Leave 30% for validation
-
-                    add_log(f"Call {call_num + 1}/{calls_needed}: Requesting {call_target} companies")
-
-                    # Run async code in a new event loop
-                    def run_single_search():
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            return loop.run_until_complete(
-                                agent.generate_enhanced_strategy(
-                                    st.session_state.current_criteria,
-                                    target_count=call_target
-                                )
-                            )
-                        finally:
-                            loop.close()
-
-                    result = run_single_search()
-
-                    companies = result.get("companies", [])
-                    all_companies.extend(companies)
-                    add_log(f"Call {call_num + 1} returned {len(companies)} companies")
-
-                    if call_num < calls_needed - 1:
-                        time.sleep(0.5)
-
-                # Revenue validation for single model
-                if has_revenue_criteria and all_companies:
-                    add_log("Starting revenue validation...")
-                    progress_bar.progress(0.8)
-
-                    # Import the validation function
-                    from shared.search_utils import validate_company_revenue
-
-                    validated_companies = []
-                    removed_count = 0
-
-                    # Validate in batches
-                    batch_size = 5
-                    for i in range(0, len(all_companies), batch_size):
-                        batch = all_companies[i:i + batch_size]
-
-                        def run_validation_batch():
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            try:
-                                # Create validation tasks
-                                validation_tasks = [
-                                    validate_company_revenue(company, st.session_state.current_criteria, serper_key)
-                                    for company in batch
-                                ]
-                                # Execute validations
-                                return loop.run_until_complete(asyncio.gather(*validation_tasks))
-                            finally:
-                                loop.close()
-
-                        batch_results = run_validation_batch()
-
-                        for company, meets_criteria in batch_results:
-                            if meets_criteria:
-                                validated_companies.append(company)
-                            else:
-                                removed_count += 1
-
-                        # Update progress
-                        validation_progress = 0.8 + (0.2 * (i + batch_size) / len(all_companies))
-                        progress_bar.progress(min(validation_progress, 0.95))
-
-                    add_log(f"Revenue validation complete: {removed_count} companies removed")
-                    all_companies = validated_companies
-
-                # Handle existing results
-                if existing_results:
-                    combined = existing_results + all_companies
-                    # Simple dedup
-                    seen = set()
-                    unique = []
-                    for c in combined:
-                        name = c.name if hasattr(c, 'name') else c.get('name', '')
-                        if name.lower() not in seen:
-                            seen.add(name.lower())
-                            unique.append(c)
-                    st.session_state.search_results = unique
-                else:
-                    st.session_state.search_results = all_companies
-
-                # Calculate cost
-                actual_cost = calls_needed * 0.02
-                if has_revenue_criteria:
-                    serper_cost = len(all_companies) * 0.001
-                    actual_cost += serper_cost
-
-                update_cost(actual_cost)
-                add_log(f"✅ Found {len(all_companies)} companies")
-
-                # Clear the log area and show success
-                log_placeholder.empty()
-                success_msg = f"✅ Found {len(all_companies)} companies!"
-                if has_revenue_criteria:
-                    success_msg += f"\n💰 Revenue validated"
-                status_placeholder.success(success_msg)
+                # Check if this attempt was too unsuccessful
+                if len(unique_new) < remaining_target * 0.1:  # Less than 10% of what we need
+                    relaxation_level += 1
 
             except Exception as e:
-                add_log(f"❌ Search failed: {str(e)}")
                 st.error(f"Search failed: {str(e)}")
+                traceback.print_exc()
+                break
 
+        else:
+            # SINGLE MODEL EXECUTION
+            if target_count > 500:
+                st.error("Single model cannot handle more than 500 companies.")
+                break
+            else:
+                status_placeholder.info(f"Searching with {st.session_state.selected_models[0]}...")
+
+                try:
+                    # Import here to avoid circular imports
+                    from shared.search_utils import EnhancedSearchStrategistAgent
+
+                    agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
+
+                    companies_this_round = []
+                    calls_needed = (remaining_target + 14) // 15  # Updated for 15 companies per call
+
+                    for call_num in range(calls_needed):
+                        call_target = min(15, remaining_target - len(companies_this_round))
+                        progress = (call_num + 1) / calls_needed
+                        progress_bar.progress(progress * 0.7)
+
+                        status_placeholder.info(f"Processing batch {call_num + 1}/{calls_needed}...")
+
+                        # Run async code in a new event loop
+                        result = run_single_search(agent, current_criteria, call_target)
+
+                        companies = result.get("companies", [])
+                        companies_this_round.extend(companies)
+
+                        if call_num < calls_needed - 1:
+                            time.sleep(0.5)
+
+                    # Deduplicate
+                    seen_names = set()
+                    for company in all_found_companies:
+                        if hasattr(company, 'name'):
+                            seen_names.add(company.name.lower().strip())
+                        else:
+                            seen_names.add(company.get('name', '').lower().strip())
+
+                    unique_new = []
+                    for company in companies_this_round:
+                        if hasattr(company, 'name'):
+                            company_name = company.name.lower().strip()
+                        else:
+                            company_name = company.get('name', '').lower().strip()
+
+                        if company_name not in seen_names:
+                            seen_names.add(company_name)
+                            unique_new.append(company)
+
+                    all_found_companies.extend(unique_new)
+                    remaining_target = target_count - len(all_found_companies)
+
+                    if not enable_recursive or remaining_target <= 0:
+                        break
+
+                    relaxation_level += 1
+
+                except Exception as e:
+                    st.error(f"Search failed: {str(e)}")
+                    break
+
+    # Final processing
+    if existing_results:
+        # Combine with existing
+        all_companies = existing_results + all_found_companies
+
+        # Final deduplication
+        seen_names = set()
+        seen_name_cores = set()
+        unique_companies = []
+
+        for company in all_companies:
+            if hasattr(company, 'name'):
+                company_name = company.name.lower().strip()
+            else:
+                company_name = company.get('name', '').lower().strip()
+
+            # Create core name
+            name_core = company_name
+            for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp']:
+                name_core = name_core.replace(suffix, '').strip()
+
+            if name_core not in seen_name_cores and company_name not in seen_names:
+                seen_names.add(company_name)
+                seen_name_cores.add(name_core)
+                unique_companies.append(company)
+
+        st.session_state.search_results = unique_companies
+        new_unique_count = len(unique_companies) - len(existing_results)
+
+        status_placeholder.success(
+            f"✅ Search complete! Added {new_unique_count} new unique companies!\n"
+            f"Total: {len(unique_companies):,} companies"
+        )
+    else:
+        # New search
+        st.session_state.search_results = all_found_companies[:target_count]  # Trim to target
+
+        success_message = f"✅ Found {len(st.session_state.search_results):,} companies!"
+        if enable_recursive and relaxation_level > 0:
+            success_message += f"\n🔄 Used {relaxation_level} levels of criteria relaxation"
+
+        status_placeholder.success(success_message)
+
+    # Update session state
+    if 'metadata' in locals():
+        st.session_state.model_success_status = metadata.get('model_stats', {})
+
+    # Track search in history
+    st.session_state.search_history.append({
+        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
+        'count': target_count,
+        'found': len(all_found_companies),
+        'mode': search_mode.split()[0],
+        'recursive': enable_recursive,
+        'relaxation_levels': relaxation_level if enable_recursive else 0
+    })
+
+    # Calculate actual cost
+    actual_cost = estimated_cost * (1 + relaxation_level * 0.5) if enable_recursive else estimated_cost
+    update_cost(actual_cost)
+
+    progress_bar.progress(1.0)
+    time.sleep(0.5)
     progress_bar.empty()
-    status_placeholder.empty()
 
 
 def display_search_results():
-    """Display search results with revenue validation indicators"""
+    """Display search results with revenue categories"""
 
     if st.session_state.search_results:
         st.divider()
         st.subheader(f"📊 Search Results ({len(st.session_state.search_results):,} companies)")
-
-        # Count revenue validated companies
-        revenue_validated_count = 0
-        for company in st.session_state.search_results:
-            if hasattr(company, 'revenue_validated'):
-                if company.revenue_validated:
-                    revenue_validated_count += 1
-            elif isinstance(company, dict) and company.get('revenue_validated'):
-                revenue_validated_count += 1
-
-        if revenue_validated_count > 0:
-            st.success(f"💰 {revenue_validated_count} companies have verified revenue data")
 
         # Filtering for large result sets
         if len(st.session_state.search_results) > 100:
@@ -623,10 +607,10 @@ def display_search_results():
                 )
 
             with col3:
-                revenue_validation_filter = st.selectbox(
-                    "Revenue Validation",
-                    ["All", "Verified Only", "Unverified Only"],
-                    index=0
+                revenue_filter = st.multiselect(
+                    "Revenue Category",
+                    ["very_high", "high", "medium", "low", "very_low", "unknown"],
+                    default=[]
                 )
 
             with col4:
@@ -637,7 +621,7 @@ def display_search_results():
         else:
             tier_filter = ["A", "B", "C", "D"]
             industry_filter = []
-            revenue_validation_filter = "All"
+            revenue_filter = []
             search_filter = ""
 
         # Convert to dataframe
@@ -653,24 +637,28 @@ def display_search_results():
                 continue
             if industry_filter and c.get('industry_category', 'Unknown') not in industry_filter:
                 continue
+            if revenue_filter and c.get('revenue_category', 'unknown') not in revenue_filter:
+                continue
             if search_filter and search_filter.lower() not in c.get('name', '').lower():
                 continue
 
-            # Revenue validation filter
-            is_revenue_validated = c.get('revenue_validated', False)
-            if revenue_validation_filter == "Verified Only" and not is_revenue_validated:
-                continue
-            elif revenue_validation_filter == "Unverified Only" and is_revenue_validated:
-                continue
+            # Map revenue categories to display names
+            revenue_display = {
+                "very_high": "$1B+",
+                "high": "$100M-$1B",
+                "medium": "$10M-$100M",
+                "low": "$1M-$10M",
+                "very_low": "<$1M",
+                "unknown": "Unknown"
+            }
 
             # Prepare display data
             row_data = {
                 "#": i + 1,
                 "Company": c.get('name', 'Unknown'),
                 "Industry": c.get('industry_category', 'Unknown'),
-                "Revenue": c.get('verified_revenue') if c.get('revenue_validated') else c.get('estimated_revenue',
-                                                                                              'Unknown'),
-                "Rev. Verified": "✓" if c.get('revenue_validated') else "✗",
+                "Revenue Cat.": revenue_display.get(c.get('revenue_category', 'unknown'), 'Unknown'),
+                "Est. Revenue": c.get('estimated_revenue', 'Unknown'),
                 "Employees": c.get('estimated_employees', 'Unknown'),
                 "ICP Score": c.get('icp_score', 0),
                 "ICP Tier": c.get('icp_tier', 'D')
@@ -684,14 +672,20 @@ def display_search_results():
             if len(st.session_state.search_results) > 100:
                 st.write(f"Showing {len(df)} of {len(st.session_state.search_results):,} companies")
 
-            # Style the dataframe to highlight verified revenue
-            def style_revenue_verified(val):
-                if val == "✓":
-                    return 'color: green; font-weight: bold'
+            # Style the dataframe to highlight revenue categories
+            def style_revenue_cat(val):
+                if val == "$1B+":
+                    return 'background-color: #90EE90'
+                elif val == "$100M-$1B":
+                    return 'background-color: #98FB98'
+                elif val == "$10M-$100M":
+                    return 'background-color: #FFE4B5'
+                elif val == "$1M-$10M":
+                    return 'background-color: #F0E68C'
                 else:
-                    return 'color: gray'
+                    return ''
 
-            styled_df = df.style.applymap(style_revenue_verified, subset=['Rev. Verified'])
+            styled_df = df.style.applymap(style_revenue_cat, subset=['Revenue Cat.'])
 
             # Pagination for large results
             if len(df) > 500:
