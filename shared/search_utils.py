@@ -2,7 +2,7 @@
 """
 Search utilities with exhaustive criteria verification before relaxation
 Ensures all segments are tried at each level before compromising criteria
-UPDATED: Added proper state, industry, and entity type matching
+UPDATED: Fixed tier B/C support with appropriate relaxation strategies
 """
 
 import asyncio
@@ -372,17 +372,19 @@ class EnhancedSearchStrategistAgent:
             criteria: SearchCriteria,
             target_count: int = 20,
             exclusion_list: Optional[List[str]] = None,
-            relaxation_level: int = 0
+            relaxation_level: int = 0,
+            tier: str = "A"  # ADD TIER PARAMETER
     ) -> Dict[str, Any]:
         """Search with specific segmentation strategy"""
         if not self.client:
             self._init_llm()
 
-        # Apply smart relaxation based on use case
+        # Apply smart relaxation based on use case AND TIER
         relaxed_criteria, relaxed_items = apply_smart_relaxation(
             criteria,
             relaxation_level,
-            getattr(criteria, 'use_case', 'general')
+            getattr(criteria, 'use_case', 'general'),
+            tier  # PASS TIER TO RELAXATION
         )
 
         # Build prompt
@@ -822,49 +824,95 @@ class EnhancedSearchStrategistAgent:
 def apply_smart_relaxation(
         criteria: SearchCriteria,
         level: int,
-        use_case: str = "general"
+        use_case: str = "general",
+        tier: str = "A"  # NEW TIER PARAMETER
 ) -> Tuple[SearchCriteria, List[str]]:
-    """Apply smart relaxation based on criteria priority and use case - STATE AND INDUSTRY STAY LONGER"""
+    """Apply smart relaxation based on criteria priority, use case, and TIER"""
     import copy
 
     relaxed = copy.deepcopy(criteria)
     relaxed_items = []
 
-    # Define relaxation plans by use case - UPDATED TO KEEP STATE AND INDUSTRY LONGER
+    # TIER-AWARE RELAXATION STRATEGIES
     if "rmh" in use_case.lower():
-        relaxation_plan = {
-            1: ["csr_focus_areas", "certifications", "recent_events"],
-            2: ["business_types"],  # Remove industries from early relaxation
-            3: ["revenue_expand_20"],
-            4: ["employee_reduce_25"],
-            5: ["industries"],  # Move industries to later relaxation
-            6: ["location_cities"],  # Keep cities but not states
-            7: ["location_states"],  # States relaxed last
-        }
+        if tier == "A":
+            # Tier A: Full relaxation strategy for exhaustive search
+            relaxation_plan = {
+                1: ["recent_events"],  # Drop recent events first
+                2: ["certifications"],  # Drop certifications
+                3: ["csr_focus_areas"],  # Drop CSR requirements
+                4: ["business_types"],  # Drop business type restrictions
+                5: ["revenue_expand_20"],  # Expand revenue by 20%
+                6: ["employee_reduce_25"],  # Reduce employee count by 25%
+                7: ["industries"],  # Drop industry restrictions
+                8: ["location_cities"],  # Drop city restrictions (keep state)
+                # Never drop states for RMH - Sydney/NSW is core requirement
+            }
+        elif tier == "B":
+            # Tier B: Gentler relaxation, preserve NSW
+            relaxation_plan = {
+                1: ["recent_events", "certifications"],
+                2: ["csr_focus_areas"],
+                3: ["business_types"],
+                4: ["revenue_expand_20"],
+                5: ["employee_reduce_25"],
+                # Keep NSW state requirement
+            }
+        else:  # Tier C
+            # Tier C: Very gentle relaxation
+            relaxation_plan = {
+                1: ["recent_events", "certifications", "csr_focus_areas"],
+                2: ["business_types"],
+                3: ["employee_reduce_50"],
+                # Keep basic location and revenue requirements
+            }
+
     elif "guide_dogs" in use_case.lower():
-        relaxation_plan = {
-            1: ["recent_events"],
-            2: ["esg_maturity"],
-            3: ["business_types"],
-            4: ["certifications"],
-            5: ["employee_reduce_50"],
-            6: ["industries"],  # Move industries to later
-            7: ["location_cities"],  # Cities before states
-            8: ["location_states"],  # States relaxed last
-        }
+        if tier == "A":
+            # Tier A: Full relaxation strategy
+            relaxation_plan = {
+                1: ["recent_events"],
+                2: ["esg_maturity"],
+                3: ["certifications"],  # Can relax certifications for Tier A
+                4: ["business_types"],
+                5: ["csr_focus_areas"],  # Can eventually relax CSR
+                6: ["employee_reduce_25"],
+                7: ["revenue_expand_20"],
+                8: ["industries"],  # Can relax industries later
+                9: ["location_cities"],  # Drop cities but keep Victoria
+                # Never drop Victoria state requirement for Guide Dogs
+            }
+        elif tier == "B":
+            # Tier B: Preserve Victoria and moderate requirements
+            relaxation_plan = {
+                1: ["recent_events", "esg_maturity", "certifications"],
+                2: ["csr_focus_areas"],  # Can relax CSR for Tier B
+                3: ["business_types"],
+                4: ["employee_reduce_25"],
+                # Keep Victoria state and revenue range
+            }
+        else:  # Tier C
+            # Tier C: Very minimal relaxation, preserve Victoria
+            relaxation_plan = {
+                1: ["recent_events", "certifications", "esg_maturity", "csr_focus_areas"],
+                2: ["business_types"],
+                3: ["employee_reduce_50"],
+                # Keep Victoria and basic requirements
+            }
     else:
+        # Generic relaxation plan
         relaxation_plan = {
             1: ["csr_focus_areas", "certifications"],
             2: ["business_types"],
             3: ["revenue_expand_50"],
             4: ["employee_reduce_50"],
-            5: ["industries"],  # Industries later
-            6: ["location_cities"],  # Cities before states
-            7: ["location_states"],  # States last
+            5: ["industries"],
+            6: ["location_cities"],
+            7: ["location_states"],
         }
 
     # Apply relaxations up to the specified level
-    for relax_level in range(1, min(level + 1, 9)):  # Increased max level
+    for relax_level in range(1, min(level + 1, len(relaxation_plan) + 1)):
         items = relaxation_plan.get(relax_level, [])
 
         for item in items:
@@ -877,6 +925,9 @@ def apply_smart_relaxation(
             elif item == "recent_events":
                 relaxed.behavioral.recent_events = []
                 relaxed_items.append("Recent events removed")
+            elif item == "esg_maturity":
+                relaxed.behavioral.esg_maturity = None
+                relaxed_items.append("ESG maturity removed")
             elif item == "industries":
                 relaxed.industries = []
                 relaxed_items.append("Industry restrictions removed")
@@ -912,13 +963,9 @@ def apply_smart_relaxation(
                 relaxed.location.cities = []
                 relaxed_items.append("City restrictions removed")
             elif item == "location_states":
+                # Only remove states if explicitly in the plan (shouldn't happen for B/C tiers)
                 relaxed.location.states = []
                 relaxed_items.append("State restrictions removed")
-            elif item == "most_restrictions":
-                relaxed.organizational.employee_count_min = None
-                relaxed.financial.revenue_min = None
-                relaxed.excluded_industries = []
-                relaxed_items.append("Most restrictions removed")
 
     return relaxed, relaxed_items
 
@@ -980,20 +1027,31 @@ async def execute_parallel_search(
         target_count: int,
         serper_key: Optional[str] = None,
         enable_recursive: bool = True,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        tier: str = "A"  # ADD TIER PARAMETER
 ) -> Dict[str, Any]:
     """Execute parallel search with exhaustive verification before relaxation"""
 
-    logger.info(f"Starting exhaustive search for {target_count} companies with {len(models)} models")
+    logger.info(f"Starting exhaustive search for {target_count} companies with {len(models)} models for Tier {tier}")
+
+    # Store tier in criteria for downstream use
+    criteria.tier = tier
 
     tracker = SearchProgressTracker()
     all_companies = []
     relaxation_level = 0
-    max_relaxation = 8  # Increased to accommodate state relaxation
+
+    # Adjust max relaxation based on tier
+    if tier == "B":
+        max_relaxation = 5  # Limited relaxation for Tier B
+    elif tier == "C":
+        max_relaxation = 3  # Minimal relaxation for Tier C
+    else:
+        max_relaxation = 9  # Full relaxation for Tier A
 
     while len(all_companies) < target_count and relaxation_level <= max_relaxation:
         logger.info(f"\n{'=' * 60}")
-        logger.info(f"RELAXATION LEVEL {relaxation_level}")
+        logger.info(f"RELAXATION LEVEL {relaxation_level} (Tier {tier})")
         logger.info(f"Found so far: {len(all_companies)}/{target_count}")
 
         level_companies = []
@@ -1037,7 +1095,8 @@ async def execute_parallel_search(
                     criteria=criteria,
                     target_count=companies_per_segment,
                     exclusion_list=tracker.get_exclusion_list(),
-                    relaxation_level=relaxation_level
+                    relaxation_level=relaxation_level,
+                    tier=tier  # PASS TIER TO SEGMENT SEARCH
                 )
                 tasks.append((model, segment, task))
 
@@ -1133,6 +1192,7 @@ async def execute_parallel_search(
             'relaxation_levels_used': relaxation_level,
             'strategy': 'EXHAUSTIVE_WITH_VERIFICATION',
             'segments_tried': summary.get('segments_tried', {}),
-            'attempts_per_level': summary.get('attempts_per_level', {})
+            'attempts_per_level': summary.get('attempts_per_level', {}),
+            'tier': tier
         }
     }
