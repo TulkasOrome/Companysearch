@@ -1,7 +1,7 @@
 # shared/search_utils.py
 """
-Search utilities with STRONG deduplication strategy and segment enforcement
-Enhanced parallel execution with exclusion lists and hard boundaries
+Search utilities with exhaustive criteria verification before relaxation
+Ensures all segments are tried at each level before compromising criteria
 """
 
 import asyncio
@@ -14,6 +14,7 @@ import concurrent.futures
 from typing import Dict, Any, List, Optional, Tuple, Set
 from dataclasses import asdict
 from datetime import datetime
+from enum import Enum
 from shared.data_models import SearchCriteria, EnhancedCompanyEntry
 import logging
 
@@ -22,25 +23,56 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class CriteriaPriority(Enum):
+    """Priority levels for different criteria"""
+    CRITICAL = 1  # Must have - never relax
+    HIGH = 2  # Very important - relax last
+    MEDIUM = 3  # Important - relax after low
+    LOW = 4  # Nice to have - relax first
+    OPTIONAL = 5  # Bonus - can ignore
+
+
 class SearchProgressTracker:
-    """Tracks progress across all parallel searches"""
+    """Enhanced tracker with exhaustion verification"""
 
     def __init__(self):
         self.found_companies: Set[str] = set()
         self.found_company_cores: Set[str] = set()
         self.model_progress: Dict[str, Dict[str, Any]] = {}
+        self.letter_coverage: Dict[str, List[Any]] = {letter: [] for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
         self.total_found = 0
         self.start_time = time.time()
 
-    def add_companies(self, model: str, companies: List[Any]) -> List[Any]:
-        """Add companies and return only unique ones"""
+        # Exhaustion tracking
+        self.segments_tried: Dict[int, Dict[str, Set[str]]] = {}  # relaxation_level -> segment_type -> segments
+        self.attempts_per_level: Dict[int, int] = {}
+        self.yield_per_attempt: Dict[int, List[int]] = {}
+        self.all_companies = []
+
+    def add_companies(self, model: str, companies: List[Any], segment_info: Optional[Dict[str, Any]] = None) -> List[
+        Any]:
+        """Add companies and track segment coverage"""
         unique_companies = []
+
+        # Track segment if provided
+        if segment_info:
+            level = segment_info.get('relaxation_level', 0)
+            seg_type = segment_info.get('type', 'unknown')
+            seg_value = segment_info.get('value', 'unknown')
+
+            if level not in self.segments_tried:
+                self.segments_tried[level] = {}
+            if seg_type not in self.segments_tried[level]:
+                self.segments_tried[level][seg_type] = set()
+            self.segments_tried[level][seg_type].add(seg_value)
 
         for company in companies:
             if hasattr(company, 'name'):
                 company_name = company.name.lower().strip()
+                original_name = company.name
             else:
                 company_name = company.get('name', '').lower().strip()
+                original_name = company.get('name', '')
 
             # Create core name for deduplication
             name_core = self._get_name_core(company_name)
@@ -49,16 +81,47 @@ class SearchProgressTracker:
                 self.found_companies.add(company_name)
                 self.found_company_cores.add(name_core)
                 unique_companies.append(company)
+                self.all_companies.append(company)
                 self.total_found += 1
+
+                # Track letter coverage
+                first_letter = original_name[0].upper() if original_name else '?'
+                if first_letter in self.letter_coverage:
+                    self.letter_coverage[first_letter].append(company)
 
         # Update model progress
         if model not in self.model_progress:
-            self.model_progress[model] = {'found': 0, 'duplicates': 0}
+            self.model_progress[model] = {'found': 0, 'duplicates': 0, 'by_segment': {}}
 
         self.model_progress[model]['found'] += len(unique_companies)
         self.model_progress[model]['duplicates'] += len(companies) - len(unique_companies)
 
         return unique_companies
+
+    def record_attempt(self, relaxation_level: int, companies_found: int):
+        """Record an attempt at a specific relaxation level"""
+        if relaxation_level not in self.attempts_per_level:
+            self.attempts_per_level[relaxation_level] = 0
+            self.yield_per_attempt[relaxation_level] = []
+
+        self.attempts_per_level[relaxation_level] += 1
+        self.yield_per_attempt[relaxation_level].append(companies_found)
+
+    def get_consecutive_low_yields(self, relaxation_level: int, threshold: int = 2) -> int:
+        """Get number of consecutive low-yield attempts"""
+        if relaxation_level not in self.yield_per_attempt:
+            return 0
+
+        yields = self.yield_per_attempt[relaxation_level]
+        consecutive = 0
+
+        for y in reversed(yields):
+            if y < threshold:
+                consecutive += 1
+            else:
+                break
+
+        return consecutive
 
     def _get_name_core(self, company_name: str) -> str:
         """Get core name for deduplication"""
@@ -69,30 +132,174 @@ class SearchProgressTracker:
         return name_core
 
     def get_exclusion_list(self, max_items: int = 100) -> List[str]:
-        """Get list of company names to exclude (limited for prompt size)"""
-        # Return most recent companies to exclude
+        """Get list of company names to exclude"""
         return list(self.found_companies)[-max_items:]
 
     def get_progress_summary(self) -> Dict[str, Any]:
         """Get current progress summary"""
         elapsed = time.time() - self.start_time
+        letter_coverage = {letter: len(companies) for letter, companies in self.letter_coverage.items()}
         return {
             'total_found': self.total_found,
             'unique_companies': len(self.found_companies),
             'elapsed_time': elapsed,
-            'models': self.model_progress
+            'models': self.model_progress,
+            'letter_coverage': letter_coverage,
+            'segments_tried': self.segments_tried,
+            'attempts_per_level': self.attempts_per_level
         }
 
 
+class ExhaustionVerifier:
+    """Verifies that criteria have been exhausted before relaxation"""
+
+    @staticmethod
+    def verify_segment_exhaustion(
+            criteria: SearchCriteria,
+            relaxation_level: int,
+            tracker: SearchProgressTracker
+    ) -> Dict[str, Any]:
+        """Verify we've truly exhausted current criteria level"""
+
+        exhaustion_report = {
+            'level': relaxation_level,
+            'segments_tried': {},
+            'segments_remaining': {},
+            'coverage_percentage': 0,
+            'exhausted': False,
+            'reason': ''
+        }
+
+        tried_at_level = tracker.segments_tried.get(relaxation_level, {})
+
+        # Check alphabet coverage
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        letters_tried = tried_at_level.get('letter', set())
+        letters_remaining = set(alphabet) - letters_tried
+
+        exhaustion_report['segments_tried']['letters'] = sorted(list(letters_tried))
+        exhaustion_report['segments_remaining']['letters'] = sorted(list(letters_remaining))
+
+        # Check industry coverage (if specified)
+        if criteria.industries:
+            industries_in_criteria = {ind['name'] for ind in criteria.industries}
+            industries_tried = tried_at_level.get('industry', set())
+            industries_remaining = industries_in_criteria - industries_tried
+
+            exhaustion_report['segments_tried']['industries'] = sorted(list(industries_tried))
+            exhaustion_report['segments_remaining']['industries'] = sorted(list(industries_remaining))
+
+        # Check location coverage
+        if criteria.location.cities:
+            cities_in_criteria = set(criteria.location.cities)
+            cities_tried = tried_at_level.get('location', set())
+            cities_remaining = cities_in_criteria - cities_tried
+
+            exhaustion_report['segments_tried']['cities'] = sorted(list(cities_tried))
+            exhaustion_report['segments_remaining']['cities'] = sorted(list(cities_remaining))
+
+        # Calculate coverage percentage
+        total_segments = 26  # alphabet
+        if criteria.industries:
+            total_segments += len(criteria.industries)
+        if criteria.location.cities:
+            total_segments += len(criteria.location.cities)
+
+        total_tried = len(letters_tried)
+        if criteria.industries:
+            total_tried += len(exhaustion_report['segments_tried'].get('industries', []))
+        if criteria.location.cities:
+            total_tried += len(exhaustion_report['segments_tried'].get('cities', []))
+
+        exhaustion_report['coverage_percentage'] = (total_tried / total_segments * 100) if total_segments > 0 else 0
+
+        # Determine if exhausted
+        total_remaining = (
+                len(letters_remaining) +
+                len(exhaustion_report['segments_remaining'].get('industries', [])) +
+                len(exhaustion_report['segments_remaining'].get('cities', []))
+        )
+
+        if total_remaining == 0:
+            exhaustion_report['exhausted'] = True
+            exhaustion_report['reason'] = 'All segments tried'
+        elif exhaustion_report['coverage_percentage'] >= 90:
+            exhaustion_report['exhausted'] = True
+            exhaustion_report['reason'] = f"{exhaustion_report['coverage_percentage']:.1f}% coverage achieved"
+        else:
+            exhaustion_report['exhausted'] = False
+            exhaustion_report['reason'] = f"Only {exhaustion_report['coverage_percentage']:.1f}% coverage"
+
+        return exhaustion_report
+
+    @staticmethod
+    def should_relax_criteria(
+            tracker: SearchProgressTracker,
+            criteria: SearchCriteria,
+            target_count: int,
+            current_count: int,
+            relaxation_level: int,
+            min_attempts: int = 3
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Determine if we should relax criteria"""
+
+        remaining_needed = target_count - current_count
+
+        # Step 1: Check segment coverage
+        exhaustion = ExhaustionVerifier.verify_segment_exhaustion(criteria, relaxation_level, tracker)
+
+        if not exhaustion['exhausted']:
+            logger.info(f"Level {relaxation_level} coverage: {exhaustion['coverage_percentage']:.1f}%")
+            if exhaustion['segments_remaining'].get('letters'):
+                logger.info(f"  Untried letters: {exhaustion['segments_remaining']['letters'][:10]}...")
+            return False, "Segments remain untried", exhaustion
+
+        # Step 2: Verify attempt count
+        attempts_at_level = tracker.attempts_per_level.get(relaxation_level, 0)
+
+        if attempts_at_level < min_attempts:
+            reason = f"Need more attempts ({attempts_at_level}/{min_attempts})"
+            return False, reason, exhaustion
+
+        # Step 3: Check yield trend
+        yields = tracker.yield_per_attempt.get(relaxation_level, [])
+
+        if len(yields) >= 2:
+            # If yield is improving, don't relax yet
+            if yields[-1] > yields[-2] * 1.2:  # 20% improvement
+                reason = f"Yield improving: {yields[-2]} → {yields[-1]}"
+                return False, reason, exhaustion
+
+        # Step 4: Check total yield at this level
+        total_at_level = sum(yields) if yields else 0
+
+        if total_at_level < remaining_needed * 0.05:  # Less than 5% of what we need
+            reason = f"Low total yield: {total_at_level} companies"
+            return True, reason, exhaustion
+
+        # Step 5: Diminishing returns check
+        if len(yields) >= 3:
+            recent_average = sum(yields[-3:]) / 3
+            if recent_average < 2:  # Less than 2 companies per attempt average
+                reason = f"Diminishing returns: {recent_average:.1f} avg per attempt"
+                return True, reason, exhaustion
+
+        # Step 6: If we have good yield but all segments tried
+        if exhaustion['exhausted'] and total_at_level >= 10:
+            reason = f"Level exhausted with {total_at_level} companies found"
+            return True, reason, exhaustion
+
+        return False, "Continue at current level", exhaustion
+
+
 class EnhancedSearchStrategistAgent:
-    """Enhanced agent with STRONG deduplication and segment enforcement"""
+    """Enhanced agent with exhaustive search capabilities"""
 
     def __init__(self, deployment_name: str = "gpt-4.1"):
         self.deployment_name = deployment_name
         self.client = None
         self.initialized = False
-        self.max_companies_per_call = 15
-        self.segment_info = None  # Will store segment assignment
+        self.max_companies_per_call = 20
 
     def _init_llm(self):
         """Initialize the LLM with Azure OpenAI"""
@@ -120,28 +327,34 @@ class EnhancedSearchStrategistAgent:
             logger.error(f"Error initializing Azure OpenAI: {str(e)}")
             raise
 
-    async def generate_enhanced_strategy(
+    async def search_with_segment(
             self,
+            segment_type: str,
+            segment_value: str,
             criteria: SearchCriteria,
-            target_count: int = 100,
-            unique_instructions: Optional[Dict[str, Any]] = None,
+            target_count: int = 20,
             exclusion_list: Optional[List[str]] = None,
             relaxation_level: int = 0
     ) -> Dict[str, Any]:
-        """Generate search strategy with STRONG uniqueness enforcement"""
+        """Search with specific segmentation strategy"""
         if not self.client:
             self._init_llm()
 
-        # Store segment info for validation
-        self.segment_info = unique_instructions
-
-        # Build prompt with strong enforcement
-        prompt = self._build_enforced_prompt(
+        # Apply smart relaxation based on use case
+        relaxed_criteria, relaxed_items = apply_smart_relaxation(
             criteria,
+            relaxation_level,
+            getattr(criteria, 'use_case', 'general')
+        )
+
+        # Build prompt
+        prompt = self._build_segment_prompt(
+            segment_type,
+            segment_value,
+            relaxed_criteria,
             target_count,
-            unique_instructions,
             exclusion_list,
-            relaxation_level
+            relaxed_items
         )
 
         try:
@@ -151,12 +364,11 @@ class EnhancedSearchStrategistAgent:
                 lambda: self.client.chat.completions.create(
                     model=self.deployment_name,
                     messages=[
-                        {"role": "system",
-                         "content": "You are a company finder. You MUST follow ALL segmentation rules EXACTLY. Companies outside your assigned segment will be REJECTED."},
+                        {"role": "system", "content": "You are a company finder. Return valid JSON only."},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0.3,
-                    max_tokens=16384,
+                    temperature=0.3 + (relaxation_level * 0.05),
+                    max_tokens=8192,
                     response_format={"type": "json_object"}
                 )
             )
@@ -164,184 +376,118 @@ class EnhancedSearchStrategistAgent:
             content = response.choices[0].message.content
             result = json.loads(content)
 
-            # Post-process and validate companies
-            validated_companies = self._validate_segment_compliance(
-                result.get("companies", []),
-                unique_instructions,
-                criteria
-            )
-
-            enhanced_companies = []
-            for company_data in validated_companies:
+            # Process companies
+            companies = []
+            for company_data in result.get("companies", []):
                 try:
                     company_data = self._ensure_company_fields(company_data)
+                    company_data['search_segment'] = f"{segment_type}:{segment_value}"
                     company_data['source_model'] = self.deployment_name
                     company_data['relaxation_level'] = relaxation_level
-
-                    if unique_instructions:
-                        company_data['search_segment'] = unique_instructions.get('segment_id', 'general')
-                        company_data['segment_type'] = unique_instructions.get('strategy', 'unknown')
-
                     company = EnhancedCompanyEntry(**company_data)
                     company = self._calculate_icp_score(company, criteria)
-                    enhanced_companies.append(company)
+                    companies.append(company)
                 except Exception as e:
                     logger.warning(f"Error processing company: {e}")
                     continue
 
             logger.info(
-                f"{self.deployment_name} found {len(enhanced_companies)} companies (segment: {unique_instructions.get('segment_id', 'none')})")
+                f"{self.deployment_name} found {len(companies)} for {segment_type}:{segment_value} (L{relaxation_level})")
 
             return {
-                "companies": enhanced_companies,
-                "metadata": {
-                    "total_found": len(enhanced_companies),
-                    "deployment": self.deployment_name,
-                    "unique_instructions": unique_instructions,
-                    "relaxation_level": relaxation_level,
-                    "segment_compliant": True
-                }
+                "companies": companies,
+                "segment": f"{segment_type}:{segment_value}",
+                "count": len(companies)
             }
 
         except Exception as e:
-            logger.error(f"Search error in {self.deployment_name}: {e}")
-            return {"companies": [], "error": str(e), "deployment": self.deployment_name}
+            logger.error(f"Search error for segment {segment_type}:{segment_value}: {e}")
+            return {"companies": [], "segment": f"{segment_type}:{segment_value}", "error": str(e)}
 
-    def _build_enforced_prompt(
+    def _build_segment_prompt(
             self,
+            segment_type: str,
+            segment_value: str,
             criteria: SearchCriteria,
             target_count: int,
-            unique_instructions: Optional[Dict[str, Any]],
-            exclusion_list: Optional[List[str]],
-            relaxation_level: int
+            exclusion_list: Optional[List[str]] = None,
+            relaxed_items: List[str] = None
     ) -> str:
-        """Build prompt with STRONG enforcement of uniqueness"""
+        """Build prompt based on segmentation strategy"""
         prompt_parts = []
 
-        # CRITICAL: Start with the STRONGEST enforcement
         prompt_parts.append("=" * 60)
-        prompt_parts.append("🚨 CRITICAL MANDATORY RULES - VIOLATION WILL RESULT IN REJECTION 🚨")
+        prompt_parts.append(f"FIND {target_count} COMPANIES")
+
+        # Show relaxation if applied
+        if relaxed_items:
+            prompt_parts.append(f"RELAXATION APPLIED: {', '.join(relaxed_items)}")
+
+        # Segment-specific requirements
+        if segment_type == "letter":
+            prompt_parts.append(f"⛔ CRITICAL: Every company name MUST start with '{segment_value}'")
+            prompt_parts.append(f"⛔ Do NOT include companies starting with any other letter")
+        elif segment_type == "industry":
+            prompt_parts.append(f"⛔ CRITICAL: Focus on {segment_value} industry")
+            prompt_parts.append(f"⛔ Include related sub-industries and niches")
+        elif segment_type == "location":
+            prompt_parts.append(f"⛔ CRITICAL: Companies in {segment_value}")
+            prompt_parts.append(f"⛔ Include companies with offices/operations there")
+        elif segment_type == "size":
+            prompt_parts.append(f"⛔ CRITICAL: {segment_value} companies")
+        elif segment_type == "general":
+            prompt_parts.append(f"⛔ Find diverse companies matching criteria")
+
         prompt_parts.append("=" * 60)
 
-        # Add segment-specific HARD boundaries
-        if unique_instructions:
-            strategy = unique_instructions.get('strategy', 'unknown')
-
-            if strategy == 'ALPHABET_PRIMARY':
-                letter = unique_instructions['letter']
-                prompt_parts.append(f"⛔ HARD RULE #1: You MUST ONLY return companies whose names START with '{letter}'")
-                prompt_parts.append(f"⛔ HARD RULE #2: Companies NOT starting with '{letter}' are FORBIDDEN")
-                prompt_parts.append(f"⛔ HARD RULE #3: Check EVERY company name - it MUST begin with '{letter}'")
-                prompt_parts.append(
-                    f"⛔ If you cannot find {target_count} companies starting with '{letter}', return fewer companies")
-                prompt_parts.append(f"⛔ DO NOT include companies starting with other letters to fill the quota")
-
-            elif strategy == 'GEOGRAPHIC_PRIMARY':
-                locations = unique_instructions['assigned_locations']
-                prompt_parts.append(f"⛔ HARD RULE #1: You MUST ONLY return companies in: {', '.join(locations)}")
-                prompt_parts.append(f"⛔ HARD RULE #2: Companies from OTHER locations are FORBIDDEN")
-                prompt_parts.append(f"⛔ HARD RULE #3: Verify EVERY company is in your assigned locations")
-
-            elif strategy == 'INDUSTRY_PRIMARY':
-                industries = unique_instructions['assigned_industries']
-                prompt_parts.append(f"⛔ HARD RULE #1: You MUST ONLY return companies in: {', '.join(industries)}")
-                prompt_parts.append(f"⛔ HARD RULE #2: Companies from OTHER industries are FORBIDDEN")
-                prompt_parts.append(f"⛔ HARD RULE #3: Verify EVERY company is in your assigned industries")
-
-            # Add rank offset if specified
-            if unique_instructions.get('rank_offset', 0) > 0:
-                offset = unique_instructions['rank_offset']
-                prompt_parts.append(f"⛔ ADDITIONAL RULE: Skip the first {offset} most obvious companies")
-                prompt_parts.append(f"⛔ Focus on companies ranked {offset + 1} onwards in prominence")
-
-        # Add exclusion list with STRONG enforcement
+        # Add exclusions
         if exclusion_list and len(exclusion_list) > 0:
-            prompt_parts.append("\n" + "=" * 60)
-            prompt_parts.append("🚫 EXCLUDED COMPANIES - DO NOT INCLUDE THESE:")
-            prompt_parts.append("=" * 60)
-            # Limit to prevent token overflow
-            for company in exclusion_list[:50]:
-                prompt_parts.append(f"  ❌ {company}")
-            if len(exclusion_list) > 50:
-                prompt_parts.append(f"  ... and {len(exclusion_list) - 50} more")
-            prompt_parts.append("⛔ Including ANY of these companies will result in REJECTION")
+            prompt_parts.append("\n🚫 EXCLUDE these companies:")
+            for company in exclusion_list[:30]:
+                prompt_parts.append(f"   ❌ {company}")
 
-        prompt_parts.append("\n" + "=" * 60)
-        prompt_parts.append("SEARCH CRITERIA (with relaxation level " + str(relaxation_level) + "):")
-        prompt_parts.append("=" * 60)
+        # Add search criteria
+        prompt_parts.append("\n📋 SEARCH CRITERIA:")
 
-        # Apply relaxation to criteria (but NOT to segment boundaries)
-        relaxed_criteria = self._apply_relaxation(criteria, relaxation_level)
+        # Location
+        if criteria.location.countries:
+            prompt_parts.append(f"Countries: {', '.join(criteria.location.countries)}")
+        if criteria.location.cities:
+            prompt_parts.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
 
-        # Add the actual search criteria
-        prompt_parts.append(f"Find {target_count} companies matching:")
-
-        # Location (unless overridden by segment)
-        if unique_instructions and unique_instructions.get('strategy') != 'GEOGRAPHIC_PRIMARY':
-            if relaxed_criteria.location.countries:
-                prompt_parts.append(f"Countries: {', '.join(relaxed_criteria.location.countries)}")
-
-        # Financial criteria (relaxed)
-        if relaxation_level < 2:
-            if relaxed_criteria.financial.revenue_categories:
-                prompt_parts.append(f"Revenue categories: {', '.join(relaxed_criteria.financial.revenue_categories)}")
-        else:
-            prompt_parts.append("Revenue: ANY (relaxed)")
-
-        # Employee criteria (relaxed)
-        if relaxation_level < 5:
-            if relaxed_criteria.organizational.employee_count_min:
-                prompt_parts.append(f"Employees: {relaxed_criteria.organizational.employee_count_min}+")
-        else:
-            prompt_parts.append("Employees: ANY (relaxed)")
-
-        # Industries (unless overridden by segment)
-        if unique_instructions and unique_instructions.get('strategy') != 'INDUSTRY_PRIMARY':
-            if relaxation_level < 3 and relaxed_criteria.industries:
-                ind_names = [ind['name'] for ind in relaxed_criteria.industries[:5]]
-                prompt_parts.append(f"Industries: {', '.join(ind_names)}")
-            elif relaxation_level >= 3:
-                prompt_parts.append("Industries: ANY (relaxed)")
-
-        # CSR criteria (relaxed first)
-        if relaxation_level < 1 and relaxed_criteria.behavioral.csr_focus_areas:
-            prompt_parts.append(f"CSR: {', '.join(relaxed_criteria.behavioral.csr_focus_areas)}")
-
-        # CRITICAL: End with enforcement reminder
-        prompt_parts.append("\n" + "=" * 60)
-        prompt_parts.append("⚠️ FINAL REMINDER - YOU MUST:")
-        prompt_parts.append("=" * 60)
-
-        if unique_instructions:
-            strategy = unique_instructions.get('strategy', 'unknown')
-            if strategy == 'ALPHABET_PRIMARY':
-                letter = unique_instructions['letter']
-                prompt_parts.append(f"1. ONLY include companies starting with '{letter}'")
-                prompt_parts.append(f"2. REJECT all companies NOT starting with '{letter}'")
-            elif strategy == 'GEOGRAPHIC_PRIMARY':
+        # Financial
+        if criteria.financial.revenue_min or criteria.financial.revenue_max:
+            if criteria.financial.revenue_min and criteria.financial.revenue_max:
                 prompt_parts.append(
-                    f"1. ONLY include companies in {', '.join(unique_instructions['assigned_locations'])}")
-                prompt_parts.append(f"2. REJECT all companies from other locations")
-            elif strategy == 'INDUSTRY_PRIMARY':
-                prompt_parts.append(
-                    f"1. ONLY include companies in {', '.join(unique_instructions['assigned_industries'])}")
-                prompt_parts.append(f"2. REJECT all companies from other industries")
+                    f"Revenue: ${criteria.financial.revenue_min / 1e6:.0f}M-${criteria.financial.revenue_max / 1e6:.0f}M")
+            elif criteria.financial.revenue_min:
+                prompt_parts.append(f"Revenue: >${criteria.financial.revenue_min / 1e6:.0f}M")
 
-        if exclusion_list:
-            prompt_parts.append(f"3. EXCLUDE all {len(exclusion_list)} companies in the exclusion list")
+        # Employees
+        if criteria.organizational.employee_count_min:
+            prompt_parts.append(f"Minimum employees: {criteria.organizational.employee_count_min}")
 
-        prompt_parts.append(f"4. Return EXACTLY {target_count} companies if possible")
-        prompt_parts.append("5. Return fewer companies rather than violate these rules")
+        # Industries
+        if segment_type != "industry" and criteria.industries:
+            ind_names = [ind['name'] for ind in criteria.industries[:5]]
+            prompt_parts.append(f"Industries: {', '.join(ind_names)}")
 
-        # JSON format
-        prompt_parts.append("\nReturn JSON format:")
+        # Business types
+        if criteria.business_types:
+            prompt_parts.append(f"Business types: {', '.join(criteria.business_types)}")
+
+        # CSR (if not relaxed)
+        if criteria.behavioral.csr_focus_areas:
+            prompt_parts.append(f"CSR areas: {', '.join(criteria.behavioral.csr_focus_areas[:3])}")
+
+        prompt_parts.append("\n📊 RETURN JSON FORMAT:")
         prompt_parts.append("""{"companies":[{
 "name":"Company Name",
 "confidence":"high",
 "operates_in_country":true,
 "business_type":"B2B",
 "industry_category":"Industry",
-"reasoning":"Brief reason",
+"reasoning":"Why this matches",
 "estimated_revenue":"50-100M",
 "revenue_category":"medium",
 "estimated_employees":"100-500",
@@ -351,93 +497,8 @@ class EnhancedSearchStrategistAgent:
 
         return "\n".join(prompt_parts)
 
-    def _apply_relaxation(self, criteria: SearchCriteria, level: int) -> SearchCriteria:
-        """Apply relaxation to criteria while preserving segment boundaries"""
-        import copy
-        from shared.data_models import determine_revenue_categories_from_range
-
-        relaxed = copy.deepcopy(criteria)
-
-        if level >= 1:
-            # Remove CSR requirements
-            relaxed.behavioral.csr_focus_areas = []
-            relaxed.behavioral.certifications = []
-            relaxed.behavioral.recent_events = []
-
-        if level >= 2:
-            # Expand revenue categories
-            relaxed.financial.revenue_categories = ["very_high", "high", "medium", "low", "very_low", "unknown"]
-
-        if level >= 3:
-            # Remove industry restrictions (but NOT if using industry segmentation)
-            if self.segment_info and self.segment_info.get('strategy') != 'INDUSTRY_PRIMARY':
-                relaxed.industries = []
-
-        if level >= 4:
-            # Expand geographic scope (but NOT if using geographic segmentation)
-            if self.segment_info and self.segment_info.get('strategy') != 'GEOGRAPHIC_PRIMARY':
-                if relaxed.location.cities:
-                    relaxed.location.cities = []
-
-        if level >= 5:
-            # Lower employee minimums
-            if relaxed.organizational.employee_count_min:
-                relaxed.organizational.employee_count_min = max(1, relaxed.organizational.employee_count_min // 2)
-
-        return relaxed
-
-    def _validate_segment_compliance(
-            self,
-            companies: List[Dict[str, Any]],
-            unique_instructions: Optional[Dict[str, Any]],
-            criteria: SearchCriteria
-    ) -> List[Dict[str, Any]]:
-        """Validate and filter companies for segment compliance"""
-        if not unique_instructions:
-            return companies
-
-        strategy = unique_instructions.get('strategy', 'unknown')
-        compliant_companies = []
-
-        for company in companies:
-            company_name = company.get('name', '').strip()
-            is_compliant = True
-
-            if strategy == 'ALPHABET_PRIMARY':
-                letter = unique_instructions['letter']
-                # Check if company name starts with the assigned letter
-                if not company_name.upper().startswith(letter.upper()):
-                    logger.warning(f"Rejecting {company_name} - doesn't start with {letter}")
-                    is_compliant = False
-
-            elif strategy == 'GEOGRAPHIC_PRIMARY':
-                locations = unique_instructions['assigned_locations']
-                # Check if company location matches assigned locations
-                hq = company.get('headquarters', {})
-                if isinstance(hq, dict):
-                    city = hq.get('city', '').lower()
-                    # Simple check - could be enhanced
-                    location_found = any(loc.lower() in city for loc in locations)
-                    if not location_found:
-                        logger.warning(f"Rejecting {company_name} - not in {locations}")
-                        is_compliant = False
-
-            elif strategy == 'INDUSTRY_PRIMARY':
-                industries = unique_instructions['assigned_industries']
-                company_industry = company.get('industry_category', '').lower()
-                industry_found = any(ind.lower() in company_industry for ind in industries)
-                if not industry_found:
-                    logger.warning(f"Rejecting {company_name} - not in {industries}")
-                    is_compliant = False
-
-            if is_compliant:
-                compliant_companies.append(company)
-
-        logger.info(f"Segment compliance: {len(compliant_companies)}/{len(companies)} companies passed")
-        return compliant_companies
-
     def _ensure_company_fields(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Ensure all required fields exist in company data"""
+        """Ensure all required fields exist"""
         defaults = {
             "name": "Unknown Company",
             "confidence": "low",
@@ -472,10 +533,7 @@ class EnhancedSearchStrategistAgent:
             "missing_criteria": [],
             "data_freshness": None,
             "data_sources": [],
-            "validation_notes": None,
-            "source_model": None,
-            "search_segment": None,
-            "relaxation_level": 0
+            "validation_notes": None
         }
 
         for key, default_value in defaults.items():
@@ -485,10 +543,11 @@ class EnhancedSearchStrategistAgent:
         return company_data
 
     def _calculate_icp_score(self, company: EnhancedCompanyEntry, criteria: SearchCriteria) -> EnhancedCompanyEntry:
-        """Calculate ICP score and tier for a company"""
+        """Calculate ICP score with relaxation awareness"""
         score = 0
         max_score = 100
 
+        # Base scoring
         if company.operates_in_country:
             score += 20
         if company.estimated_revenue:
@@ -502,15 +561,31 @@ class EnhancedSearchStrategistAgent:
         if company.confidence in ["high", "absolute"]:
             score += 15
 
-        # Determine tier
-        if score >= 80:
-            tier = "A"
-        elif score >= 60:
-            tier = "B"
-        elif score >= 40:
-            tier = "C"
+        # Get relaxation level (handle both dict and object)
+        if hasattr(company, 'relaxation_level'):
+            relaxation_level = company.relaxation_level
+        elif isinstance(company, dict):
+            relaxation_level = company.get('relaxation_level', 0)
         else:
+            relaxation_level = 0
+
+        # Penalize based on relaxation level
+        relaxation_penalty = relaxation_level * 5
+        score = max(0, score - relaxation_penalty)
+
+        # Determine tier with relaxation consideration
+        if score >= 80 and relaxation_level == 0:
+            tier = "A"
+        elif score >= 70 and relaxation_level <= 1:
+            tier = "B"
+        elif score >= 60 and relaxation_level <= 2:
+            tier = "C"
+        elif score >= 50 and relaxation_level <= 3:
             tier = "D"
+        elif score >= 40:
+            tier = "E"
+        else:
+            tier = "F"
 
         company.icp_score = score
         company.icp_tier = tier
@@ -518,269 +593,154 @@ class EnhancedSearchStrategistAgent:
         return company
 
 
-async def execute_parallel_search_with_recursion(
-        models: List[str],
+def apply_smart_relaxation(
         criteria: SearchCriteria,
-        target_count: int,
-        enable_recursive: bool = True,
-        progress_callback: Optional[callable] = None
-) -> Dict[str, Any]:
-    """Execute parallel search with recursive relaxation and STRONG deduplication"""
+        level: int,
+        use_case: str = "general"
+) -> Tuple[SearchCriteria, List[str]]:
+    """Apply smart relaxation based on criteria priority and use case"""
+    import copy
 
-    logger.info(f"Starting parallel search for {target_count} companies with {len(models)} models")
+    relaxed = copy.deepcopy(criteria)
+    relaxed_items = []
 
-    # Initialize progress tracker
-    tracker = SearchProgressTracker()
-
-    # Determine strategy
-    strategy, strategy_description, strategy_params = determine_scale_strategy(
-        len(models),
-        target_count,
-        criteria
-    )
-
-    logger.info(f"Using strategy: {strategy} - {strategy_description}")
-
-    all_found_companies = []
-    relaxation_level = 0
-    max_relaxation = 5
-    remaining_target = target_count
-
-    while remaining_target > 0 and (not enable_recursive or relaxation_level <= max_relaxation):
-
-        if relaxation_level > 0:
-            logger.info(f"Applying relaxation level {relaxation_level}")
-
-        # Calculate targets for this round
-        base_per_model = remaining_target // len(models)
-
-        # Create async tasks for each model
-        async def search_with_model(model_idx: int, model: str) -> List[Any]:
-            """Async function to search with a single model"""
-            model_target = base_per_model + (1 if model_idx < (remaining_target % len(models)) else 0)
-
-            logger.info(f"Model {model} starting search for {model_target} companies")
-
-            # Generate unique instructions that PERSIST through relaxation
-            unique_instructions = generate_scale_instructions(
-                model_idx,
-                len(models),
-                criteria,
-                strategy,
-                strategy_params,
-                model_target,
-                1  # call number
-            )
-
-            # Add relaxation info to instructions
-            unique_instructions['relaxation_level'] = relaxation_level
-            unique_instructions['enforce_segment'] = True
-
-            # Get exclusion list from tracker
-            exclusion_list = tracker.get_exclusion_list(max_items=100)
-
-            try:
-                agent = EnhancedSearchStrategistAgent(deployment_name=model)
-
-                result = await agent.generate_enhanced_strategy(
-                    criteria,
-                    target_count=model_target,
-                    unique_instructions=unique_instructions,
-                    exclusion_list=exclusion_list,
-                    relaxation_level=relaxation_level
-                )
-
-                companies = result.get('companies', [])
-
-                # Add to tracker and get unique companies
-                unique_companies = tracker.add_companies(model, companies)
-
-                logger.info(
-                    f"Model {model} found {len(unique_companies)} unique companies ({len(companies) - len(unique_companies)} duplicates)")
-
-                # Call progress callback if provided
-                if progress_callback:
-                    progress_callback(tracker.get_progress_summary())
-
-                return unique_companies
-
-            except Exception as e:
-                logger.error(f"Model {model} failed: {str(e)}")
-                return []
-
-        # Execute all models in parallel
-        tasks = [search_with_model(idx, model) for idx, model in enumerate(models)]
-        results = await asyncio.gather(*tasks, return_exceptions=False)
-
-        # Collect results from this round
-        round_companies = []
-        for company_list in results:
-            round_companies.extend(company_list)
-
-        all_found_companies.extend(round_companies)
-        remaining_target = target_count - len(all_found_companies)
-
-        logger.info(
-            f"Round {relaxation_level + 1} complete: Found {len(round_companies)} companies, Total: {len(all_found_companies)}/{target_count}")
-
-        # Check if we should continue
-        if not enable_recursive or remaining_target <= 0:
-            break
-
-        # Check if this round was unsuccessful enough to warrant relaxation
-        if len(round_companies) < remaining_target * 0.2:  # Less than 20% of what we need
-            relaxation_level += 1
-        else:
-            # Try same level again with updated exclusions
-            pass
-
-    # Final summary
-    summary = tracker.get_progress_summary()
-    logger.info(f"Search complete: Found {len(all_found_companies)} total companies")
-    logger.info(f"Model performance: {summary['models']}")
-
-    return {
-        'companies': all_found_companies[:target_count],  # Trim to exact target
-        'metadata': {
-            'parallel_execution': True,
-            'strategy': strategy,
-            'models_used': models,
-            'relaxation_levels_used': relaxation_level,
-            'total_found': len(all_found_companies),
-            'duplicates_prevented': summary['total_found'] - len(all_found_companies),
-            'execution_time': summary['elapsed_time'],
-            'model_performance': summary['models']
+    # Define relaxation plans by use case
+    if "rmh" in use_case.lower():
+        relaxation_plan = {
+            1: ["csr_focus_areas", "certifications", "recent_events"],
+            2: ["industries"],
+            3: ["revenue_expand_20"],
+            4: ["employee_reduce_25"],
+            5: ["revenue_expand_50"],
+            6: ["location_cities"],
         }
-    }
-
-
-def determine_scale_strategy(
-        num_models: int,
-        target_count: int,
-        criteria: SearchCriteria
-) -> Tuple[str, str, Dict[str, Any]]:
-    """Determine the best strategy for scale searches with hard segmentation"""
-
-    strategy_params = {
-        'max_per_call': 15,
-        'enforce_boundaries': True,  # NEW: Enforce hard boundaries
-        'use_exclusions': True  # NEW: Use exclusion lists
-    }
-
-    # Calculate calls needed
-    strategy_params['total_calls_needed'] = (target_count + 14) // 15
-    strategy_params['calls_per_model'] = (strategy_params['total_calls_needed'] + num_models - 1) // num_models
-
-    # For any significant search, use alphabet as primary
-    # It's the most reliable for hard boundaries
-    if target_count >= 100:
-        return (
-            "ALPHABET_PRIMARY",
-            f"Alphabet segmentation for {target_count} companies with hard boundaries",
-            strategy_params
-        )
+    elif "guide_dogs" in use_case.lower():
+        relaxation_plan = {
+            1: ["recent_events"],
+            2: ["esg_maturity"],
+            3: ["business_types"],
+            4: ["industries"],
+            5: ["certifications"],
+            6: ["employee_reduce_50"],
+        }
     else:
-        # For smaller searches, can use geographic or industry if applicable
-        if criteria.location.cities and len(criteria.location.cities) >= num_models:
-            return (
-                "GEOGRAPHIC_PRIMARY",
-                f"Geographic segmentation across {len(criteria.location.cities)} cities",
-                strategy_params
-            )
-        elif criteria.industries and len(criteria.industries) >= num_models:
-            return (
-                "INDUSTRY_PRIMARY",
-                f"Industry segmentation across {len(criteria.industries)} industries",
-                strategy_params
-            )
-        else:
-            return (
-                "ALPHABET_PRIMARY",
-                "Alphabet segmentation for complete coverage",
-                strategy_params
-            )
+        relaxation_plan = {
+            1: ["csr_focus_areas", "certifications"],
+            2: ["industries", "business_types"],
+            3: ["revenue_expand_50"],
+            4: ["employee_reduce_50"],
+            5: ["location_cities"],
+            6: ["most_restrictions"],
+        }
+
+    # Apply relaxations up to the specified level
+    for relax_level in range(1, min(level + 1, 7)):
+        items = relaxation_plan.get(relax_level, [])
+
+        for item in items:
+            if item == "csr_focus_areas":
+                relaxed.behavioral.csr_focus_areas = []
+                relaxed_items.append("CSR focus areas removed")
+            elif item == "certifications":
+                relaxed.behavioral.certifications = []
+                relaxed_items.append("Certifications removed")
+            elif item == "recent_events":
+                relaxed.behavioral.recent_events = []
+                relaxed_items.append("Recent events removed")
+            elif item == "industries":
+                relaxed.industries = []
+                relaxed_items.append("Industry restrictions removed")
+            elif item == "business_types":
+                relaxed.business_types = []
+                relaxed_items.append("Business type restrictions removed")
+            elif item == "revenue_expand_20":
+                if relaxed.financial.revenue_min:
+                    relaxed.financial.revenue_min *= 0.8
+                if relaxed.financial.revenue_max:
+                    relaxed.financial.revenue_max *= 1.2
+                relaxed_items.append("Revenue range expanded 20%")
+            elif item == "revenue_expand_50":
+                if relaxed.financial.revenue_min:
+                    relaxed.financial.revenue_min *= 0.5
+                if relaxed.financial.revenue_max:
+                    relaxed.financial.revenue_max *= 2
+                relaxed_items.append("Revenue range expanded 50%")
+            elif item == "employee_reduce_25":
+                if relaxed.organizational.employee_count_min:
+                    relaxed.organizational.employee_count_min = int(
+                        relaxed.organizational.employee_count_min * 0.75
+                    )
+                relaxed_items.append("Minimum employees reduced 25%")
+            elif item == "employee_reduce_50":
+                if relaxed.organizational.employee_count_min:
+                    relaxed.organizational.employee_count_min = max(
+                        1,
+                        relaxed.organizational.employee_count_min // 2
+                    )
+                relaxed_items.append("Minimum employees reduced 50%")
+            elif item == "location_cities":
+                relaxed.location.cities = []
+                relaxed_items.append("City restrictions removed")
+            elif item == "most_restrictions":
+                relaxed.organizational.employee_count_min = None
+                relaxed.financial.revenue_min = None
+                relaxed.excluded_industries = []
+                relaxed_items.append("Most restrictions removed")
+
+    return relaxed, relaxed_items
 
 
-def generate_scale_instructions(
-        model_index: int,
-        total_models: int,
+async def get_untried_segments(
         criteria: SearchCriteria,
-        strategy: str,
-        strategy_params: Dict[str, Any],
-        target_per_model: int,
-        call_number: int = 1
-) -> Dict[str, Any]:
-    """Generate unique instructions with HARD boundaries for scale searches"""
+        relaxation_level: int,
+        tracker: SearchProgressTracker
+) -> List[Dict[str, Any]]:
+    """Get segments that haven't been tried at this relaxation level"""
 
-    instructions = {
-        'agent_number': model_index + 1,
-        'total_agents': total_models,
-        'strategy': strategy,
-        'segment_id': f"agent_{model_index + 1}_call_{call_number}",
-        'call_number': call_number,
-        'enforce_boundaries': True,  # NEW: Always enforce
-        'total_calls': strategy_params.get('calls_per_model', 1)
-    }
+    untried = []
+    tried_at_level = tracker.segments_tried.get(relaxation_level, {})
 
-    if strategy == "ALPHABET_PRIMARY":
-        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    # Check alphabet
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    letters_tried = tried_at_level.get('letter', set())
 
-        # Divide alphabet evenly among models
-        letters_per_model = len(alphabet) / total_models
-        start_idx = int(model_index * letters_per_model)
-        end_idx = int((model_index + 1) * letters_per_model) - 1
+    for letter in alphabet:
+        if letter not in letters_tried:
+            untried.append({
+                'type': 'letter',
+                'value': letter,
+                'priority': 1  # Alphabet has highest priority
+            })
 
-        if model_index == total_models - 1:
-            end_idx = len(alphabet) - 1
+    # Check industries
+    if criteria.industries:
+        industries_tried = tried_at_level.get('industry', set())
+        for industry in criteria.industries:
+            ind_name = industry['name']
+            if ind_name not in industries_tried:
+                untried.append({
+                    'type': 'industry',
+                    'value': ind_name,
+                    'priority': 2
+                })
 
-        if start_idx == end_idx:
-            instructions['letter'] = alphabet[start_idx]
-            instructions['segment_description'] = f"ONLY companies starting with '{alphabet[start_idx]}'"
-        else:
-            # For range, still assign specific letters
-            assigned_letters = alphabet[start_idx:end_idx + 1]
-            instructions['letter'] = assigned_letters[call_number % len(assigned_letters)]
-            instructions['letter_range'] = f"{alphabet[start_idx]}-{alphabet[end_idx]}"
-            instructions[
-                'segment_description'] = f"ONLY companies starting with '{instructions['letter']}' (from range {instructions['letter_range']})"
+    # Check locations
+    if criteria.location.cities:
+        locations_tried = tried_at_level.get('location', set())
+        for city in criteria.location.cities:
+            if city not in locations_tried:
+                untried.append({
+                    'type': 'location',
+                    'value': city,
+                    'priority': 3
+                })
 
-        # Add sub-segment for large searches
-        if target_per_model > 50:
-            sub_segments = ['large', 'medium', 'small']
-            instructions['sub_segment'] = sub_segments[(call_number - 1) % len(sub_segments)]
+    # Sort by priority
+    untried.sort(key=lambda x: x['priority'])
 
-    elif strategy == "GEOGRAPHIC_PRIMARY":
-        locations = criteria.location.cities if criteria.location.cities else criteria.location.countries
-
-        locs_per_model = max(1, len(locations) // total_models)
-        start_idx = model_index * locs_per_model
-        end_idx = start_idx + locs_per_model
-
-        if model_index == total_models - 1:
-            end_idx = len(locations)
-
-        instructions['assigned_locations'] = locations[start_idx:end_idx]
-        instructions['rank_offset'] = (call_number - 1) * 50
-        instructions['segment_description'] = f"ONLY companies in {', '.join(instructions['assigned_locations'])}"
-
-    elif strategy == "INDUSTRY_PRIMARY":
-        industries = [ind['name'] for ind in criteria.industries]
-
-        ind_per_model = max(1, len(industries) // total_models)
-        start_idx = model_index * ind_per_model
-        end_idx = start_idx + ind_per_model
-
-        if model_index == total_models - 1:
-            end_idx = len(industries)
-
-        instructions['assigned_industries'] = industries[start_idx:end_idx]
-        instructions['rank_offset'] = (call_number - 1) * 50
-        instructions['segment_description'] = f"ONLY companies in {', '.join(instructions['assigned_industries'])}"
-
-    return instructions
+    return untried
 
 
-# Wrapper function for compatibility
 async def execute_parallel_search(
         models: List[str],
         criteria: SearchCriteria,
@@ -789,11 +749,157 @@ async def execute_parallel_search(
         enable_recursive: bool = True,
         progress_callback: Optional[callable] = None
 ) -> Dict[str, Any]:
-    """Wrapper for backward compatibility"""
-    return await execute_parallel_search_with_recursion(
-        models,
-        criteria,
-        target_count,
-        enable_recursive,
-        progress_callback
-    )
+    """Execute parallel search with exhaustive verification before relaxation"""
+
+    logger.info(f"Starting exhaustive search for {target_count} companies with {len(models)} models")
+
+    tracker = SearchProgressTracker()
+    all_companies = []
+    relaxation_level = 0
+    max_relaxation = 6
+
+    while len(all_companies) < target_count and relaxation_level <= max_relaxation:
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"RELAXATION LEVEL {relaxation_level}")
+        logger.info(f"Found so far: {len(all_companies)}/{target_count}")
+
+        level_companies = []
+        attempts = 0
+        max_attempts_per_level = 5
+        min_attempts_before_relaxation = 3
+
+        while attempts < max_attempts_per_level:
+            attempts += 1
+            logger.info(f"\nLevel {relaxation_level}, Attempt {attempts}")
+
+            # Get untried segments
+            untried_segments = await get_untried_segments(criteria, relaxation_level, tracker)
+
+            if not untried_segments and attempts > 1:
+                logger.info("All segments tried at this level")
+                break
+
+            # If no untried segments, retry some segments
+            if not untried_segments:
+                # Retry alphabet with different approach
+                untried_segments = [
+                    {'type': 'letter', 'value': chr(65 + (attempts % 26)), 'priority': 1}
+                    for _ in range(min(5, len(models)))
+                ]
+
+            # Search untried segments
+            tasks = []
+            for i, segment in enumerate(untried_segments[:len(models) * 3]):  # Limit parallel tasks
+                model = models[i % len(models)]
+                agent = EnhancedSearchStrategistAgent(deployment_name=model)
+
+                companies_per_segment = min(
+                    20,
+                    (target_count - len(all_companies)) // max(1, len(untried_segments)) + 5
+                )
+
+                task = agent.search_with_segment(
+                    segment_type=segment['type'],
+                    segment_value=segment['value'],
+                    criteria=criteria,
+                    target_count=companies_per_segment,
+                    exclusion_list=tracker.get_exclusion_list(),
+                    relaxation_level=relaxation_level
+                )
+                tasks.append((model, segment, task))
+
+            # Execute tasks
+            if tasks:
+                results = await asyncio.gather(*[task for _, _, task in tasks], return_exceptions=True)
+
+                round_companies = []
+                for (model, segment, _), result in zip(tasks, results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Task failed: {result}")
+                        continue
+
+                    if isinstance(result, dict) and 'companies' in result:
+                        companies = result['companies']
+                        segment_info = {
+                            'type': segment['type'],
+                            'value': segment['value'],
+                            'relaxation_level': relaxation_level
+                        }
+                        unique_companies = tracker.add_companies(model, companies, segment_info)
+                        round_companies.extend(unique_companies)
+                        level_companies.extend(unique_companies)
+                        all_companies.extend(unique_companies)
+
+                # Record attempt
+                tracker.record_attempt(relaxation_level, len(round_companies))
+
+                logger.info(f"Attempt {attempts} found {len(round_companies)} companies")
+
+                if progress_callback:
+                    progress_callback(tracker.get_progress_summary())
+
+            # Check if we have enough
+            if len(all_companies) >= target_count:
+                logger.info(f"Target reached: {len(all_companies)}/{target_count}")
+                break
+
+            # Check for consecutive low yields
+            if tracker.get_consecutive_low_yields(relaxation_level) >= 3:
+                logger.info("3 consecutive low-yield attempts")
+                break
+
+        # Level summary
+        logger.info(f"\nLevel {relaxation_level} Summary:")
+        logger.info(f"  - Attempts: {attempts}")
+        logger.info(f"  - Companies found at this level: {len(level_companies)}")
+        logger.info(f"  - Total companies: {len(all_companies)}")
+
+        # Check if we should relax
+        if len(all_companies) >= target_count:
+            break
+
+        if not enable_recursive:
+            logger.info("Recursive search disabled, stopping")
+            break
+
+        # Exhaustion verification
+        should_relax, reason, exhaustion = ExhaustionVerifier.should_relax_criteria(
+            tracker, criteria, target_count, len(all_companies),
+            relaxation_level, min_attempts_before_relaxation
+        )
+
+        logger.info(f"\nExhaustion Check:")
+        logger.info(f"  Coverage: {exhaustion['coverage_percentage']:.1f}%")
+        logger.info(f"  Decision: {'RELAX' if should_relax else 'CONTINUE'} - {reason}")
+
+        if should_relax:
+            logger.info(f"✓ Level {relaxation_level} EXHAUSTED: {reason}")
+            relaxation_level += 1
+        else:
+            logger.info(f"✗ Level {relaxation_level} NOT exhausted: {reason}")
+            # Continue at same level but with different approach
+            if attempts >= max_attempts_per_level:
+                logger.info("Max attempts reached, forcing relaxation")
+                relaxation_level += 1
+
+    # Final summary
+    summary = tracker.get_progress_summary()
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"SEARCH COMPLETE")
+    logger.info(f"Total found: {len(all_companies)}")
+    logger.info(f"Relaxation levels used: {relaxation_level}")
+    logger.info(f"Time elapsed: {summary['elapsed_time']:.1f}s")
+
+    return {
+        'companies': all_companies[:target_count],
+        'metadata': {
+            'total_found': len(all_companies),
+            'letter_coverage': summary.get('letter_coverage', {}),
+            'model_performance': summary['models'],
+            'execution_time': summary['elapsed_time'],
+            'relaxation_levels_used': relaxation_level,
+            'strategy': 'EXHAUSTIVE_WITH_VERIFICATION',
+            'segments_tried': summary.get('segments_tried', {}),
+            'attempts_per_level': summary.get('attempts_per_level', {})
+        }
+    }

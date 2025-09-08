@@ -117,8 +117,11 @@ class SearchCriteria:
 # COMPANY ENTRY MODEL - UPDATED WITH REVENUE CATEGORY
 # ============================================================================
 
+# Update for shared/data_models.py
+# Add this field to the EnhancedCompanyEntry class
+
 class EnhancedCompanyEntry(BaseModel):
-    """Complete enhanced company entry with revenue categories instead of validation"""
+    """Complete enhanced company entry with all fields"""
     # Basic info
     name: str = Field(description="Company name")
     confidence: str = Field(description="Confidence level")
@@ -133,7 +136,7 @@ class EnhancedCompanyEntry(BaseModel):
     office_locations: List[Any] = Field(default_factory=list)
     service_areas: List[str] = Field(default_factory=list)
 
-    # Financial profile - UPDATED
+    # Financial profile
     estimated_revenue: Optional[str] = Field(default=None)
     revenue_category: Optional[str] = Field(default="unknown", description="Broad revenue category")
     revenue_currency: Optional[str] = Field(default="USD")
@@ -167,8 +170,11 @@ class EnhancedCompanyEntry(BaseModel):
     data_sources: List[str] = Field(default_factory=list)
     validation_notes: Optional[str] = Field(default=None)
 
-    # Parallel execution tracking
-    source_model: Optional[str] = Field(default=None)
+    # Search metadata - ADDED FIELDS
+    source_model: Optional[str] = Field(default=None, description="Model that found this company")
+    search_segment: Optional[str] = Field(default=None, description="Search segment (e.g., letter:A, industry:Tech)")
+    relaxation_level: int = Field(default=0, description="Criteria relaxation level when found (0=exact match, 6=maximum relaxation)")
+    search_letter: Optional[str] = Field(default=None, description="Letter segment if alphabet search")
 
 
 # ============================================================================

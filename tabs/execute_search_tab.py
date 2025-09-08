@@ -1,7 +1,6 @@
 # tabs/execute_search_tab.py
 """
-Execute Search Tab - Simplified with minimal logging
-No thread interruptions, clean execution
+Execute Search Tab - Fixed pagination and alphabet segmentation
 """
 
 import streamlit as st
@@ -213,7 +212,7 @@ def render_execute_search_tab():
         else:
             execute_enabled = True
 
-        # Show segmentation strategy
+        # Show segmentation strategy with FIXED alphabet distribution
         if st.session_state.parallel_execution_enabled:
             with st.expander("🎯 How Models Will Be Segmented", expanded=False):
                 st.write(f"Using {len(st.session_state.selected_models)} models in parallel")
@@ -223,26 +222,30 @@ def render_execute_search_tab():
                     st.markdown("**Alphabet Segmentation Strategy:**")
                     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                     models = st.session_state.selected_models
-                    letters_per_model = max(1, len(alphabet) // len(models))
+                    letters_per_model = len(alphabet) // len(models)
                     remainder = len(alphabet) % len(models)
 
                     for i, model in enumerate(models):
+                        # FIXED CALCULATION - ensures no overlap and covers all letters
                         if i < remainder:
                             # Models that get an extra letter
                             start_idx = i * (letters_per_model + 1)
-                            end_idx = start_idx + letters_per_model  # inclusive
+                            end_idx = start_idx + letters_per_model  # end_idx is inclusive
                         else:
                             # Models that get the base number of letters
                             start_idx = remainder * (letters_per_model + 1) + (i - remainder) * letters_per_model
-                            end_idx = start_idx + letters_per_model - 1
+                            end_idx = start_idx + letters_per_model - 1  # end_idx is inclusive
 
                         # Ensure we don't go past Z
                         end_idx = min(end_idx, len(alphabet) - 1)
 
-                        letter_range = f"{alphabet[start_idx]}-{alphabet[end_idx]}"
-                        letters_list = alphabet[start_idx:end_idx + 1]
-                        st.write(
-                            f"**{model}**: Companies starting with **{letter_range}** ({len(letters_list)} letters: {letters_list})")
+                        # Extract the actual letters
+                        assigned_letters = alphabet[start_idx:end_idx + 1]
+                        letter_range = f"{alphabet[start_idx]}-{alphabet[end_idx]}" if start_idx != end_idx else \
+                        alphabet[start_idx]
+
+                        st.write(f"**{model}**: Companies starting with **{letter_range}** "
+                                 f"({len(assigned_letters)} letters: {assigned_letters})")
 
                 st.info("Each model is **locked** to its segment and cannot search outside it!")
 
@@ -350,26 +353,16 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
             new_companies = result.get('companies', [])
             metadata = result.get('metadata', {})
 
-            # Show execution summary
+            # Show execution summary (minimized by default)
             if metadata:
-                with st.expander("📊 Execution Summary", expanded=True):
+                with st.expander("📊 Execution Summary", expanded=False):
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         st.metric("Companies Found", len(new_companies))
-                        st.metric("Execution Time", f"{execution_time:.1f}s")
                     with col2:
-                        st.metric("Duplicates Prevented", metadata.get('duplicates_prevented', 0))
-                        st.metric("Strategy Used", metadata.get('strategy', 'Unknown'))
+                        st.metric("Execution Time", f"{execution_time:.1f}s")
                     with col3:
-                        st.metric("Relaxation Levels", metadata.get('relaxation_levels_used', 0))
                         st.metric("Models Used", len(selected_models))
-
-                    # Show model performance if available
-                    if metadata.get('model_performance'):
-                        st.markdown("**Model Performance:**")
-                        for model, stats in metadata['model_performance'].items():
-                            st.write(
-                                f"• {model}: {stats.get('found', 0)} unique, {stats.get('duplicates', 0)} duplicates blocked")
 
             # Process results
             if existing_results:
@@ -443,150 +436,261 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
 
 
 def display_search_results():
-    """Display search results with enhanced information"""
+    """Display search results with enhanced information and improved pagination"""
 
-    if st.session_state.search_results:
-        st.divider()
-        st.subheader(f"📊 Search Results ({len(st.session_state.search_results):,} companies)")
+    if not st.session_state.search_results:
+        return
 
-        # Show segment distribution if available
-        if st.session_state.search_results and len(st.session_state.search_results) > 0:
-            sample_company = st.session_state.search_results[0]
-            if hasattr(sample_company, 'search_segment') or (
-                    isinstance(sample_company, dict) and 'search_segment' in sample_company):
+    st.divider()
+    st.subheader(f"📊 Search Results ({len(st.session_state.search_results):,} companies)")
 
-                with st.expander("📊 Segment Distribution", expanded=False):
-                    segment_counts = {}
+    # Show segment distribution if available
+    if st.session_state.search_results and len(st.session_state.search_results) > 0:
+        sample_company = st.session_state.search_results[0]
+        if hasattr(sample_company, 'search_segment') or (
+                isinstance(sample_company, dict) and 'search_segment' in sample_company):
 
-                    for company in st.session_state.search_results:
-                        if hasattr(company, 'search_segment'):
-                            segment = company.search_segment
-                        else:
-                            segment = company.get('search_segment', 'unknown')
+            with st.expander("📊 Segment Distribution", expanded=False):
+                segment_counts = {}
 
-                        segment_counts[segment] = segment_counts.get(segment, 0) + 1
+                for company in st.session_state.search_results:
+                    if hasattr(company, 'search_segment'):
+                        segment = company.search_segment
+                    else:
+                        segment = company.get('search_segment', 'unknown')
 
-                    # Display as metrics
-                    cols = st.columns(min(len(segment_counts), 4))
-                    for i, (segment, count) in enumerate(segment_counts.items()):
-                        with cols[i % len(cols)]:
-                            st.metric(segment, count)
+                    segment_counts[segment] = segment_counts.get(segment, 0) + 1
 
-        # Filtering
-        if len(st.session_state.search_results) > 100:
-            col1, col2, col3, col4 = st.columns(4)
+                # Display as metrics
+                cols = st.columns(min(len(segment_counts), 4))
+                for i, (segment, count) in enumerate(segment_counts.items()):
+                    with cols[i % len(cols)]:
+                        st.metric(segment, count)
 
-            with col1:
-                tier_filter = st.multiselect(
-                    "Filter by ICP Tier",
-                    ["A", "B", "C", "D"],
-                    default=["A", "B"]
-                )
+    # Filtering options
+    col1, col2, col3, col4 = st.columns(4)
 
-            with col2:
-                industries = list(set([
-                    c.industry_category if hasattr(c, 'industry_category') else c.get('industry_category', 'Unknown')
-                    for c in st.session_state.search_results[:200]
-                ]))[:20]
+    # Always show filter options but with appropriate defaults
+    with col1:
+        tier_filter = st.multiselect(
+            "Filter by ICP Tier",
+            ["A", "B", "C", "D"],
+            default=["A", "B", "C", "D"],
+            key="tier_filter_execute"  # Unique key
+        )
 
-                industry_filter = st.multiselect(
-                    "Filter by Industry",
-                    industries,
-                    default=[]
-                )
+    with col2:
+        # Get unique industries from results
+        industries = list(set([
+            c.industry_category if hasattr(c, 'industry_category') else c.get('industry_category', 'Unknown')
+            for c in st.session_state.search_results[:min(200, len(st.session_state.search_results))]
+        ]))[:20]
 
-            with col3:
-                revenue_filter = st.multiselect(
-                    "Revenue Category",
-                    ["very_high", "high", "medium", "low", "very_low", "unknown"],
-                    default=[]
-                )
+        industry_filter = st.multiselect(
+            "Filter by Industry",
+            industries,
+            default=[],
+            key="industry_filter_execute"  # Unique key
+        )
 
-            with col4:
-                search_filter = st.text_input(
-                    "Search company names",
-                    placeholder="Type to search..."
-                )
+    with col3:
+        revenue_filter = st.multiselect(
+            "Revenue Category",
+            ["very_high", "high", "medium", "low", "very_low", "unknown"],
+            default=[],
+            key="revenue_filter_execute"  # Unique key
+        )
+
+    with col4:
+        search_filter = st.text_input(
+            "Search company names",
+            placeholder="Type to search...",
+            key="search_filter_execute"  # Unique key
+        )
+
+    # Convert to dataframe and apply filters
+    results_data = []
+    for i, company in enumerate(st.session_state.search_results):
+        if hasattr(company, 'dict'):
+            c = company.dict()
         else:
-            tier_filter = ["A", "B", "C", "D"]
-            industry_filter = []
-            revenue_filter = []
-            search_filter = ""
+            c = company
 
-        # Convert to dataframe
-        results_data = []
-        for i, company in enumerate(st.session_state.search_results):
-            if hasattr(company, 'dict'):
-                c = company.dict()
-            else:
-                c = company
+        # Apply filters
+        if c.get('icp_tier', 'D') not in tier_filter:
+            continue
+        if industry_filter and c.get('industry_category', 'Unknown') not in industry_filter:
+            continue
+        if revenue_filter and c.get('revenue_category', 'unknown') not in revenue_filter:
+            continue
+        if search_filter and search_filter.lower() not in c.get('name', '').lower():
+            continue
 
-            # Apply filters
-            if c.get('icp_tier', 'D') not in tier_filter:
-                continue
-            if industry_filter and c.get('industry_category', 'Unknown') not in industry_filter:
-                continue
-            if revenue_filter and c.get('revenue_category', 'unknown') not in revenue_filter:
-                continue
-            if search_filter and search_filter.lower() not in c.get('name', '').lower():
-                continue
+        # Map revenue categories for display
+        revenue_display = {
+            "very_high": "$1B+",
+            "high": "$100M-$1B",
+            "medium": "$10M-$100M",
+            "low": "$1M-$10M",
+            "very_low": "<$1M",
+            "unknown": "Unknown"
+        }
 
-            # Map revenue categories
-            revenue_display = {
-                "very_high": "$1B+",
-                "high": "$100M-$1B",
-                "medium": "$10M-$100M",
-                "low": "$1M-$10M",
-                "very_low": "<$1M",
-                "unknown": "Unknown"
-            }
+        row_data = {
+            "#": i + 1,
+            "Company": c.get('name', 'Unknown'),
+            "Industry": c.get('industry_category', 'Unknown'),
+            "Revenue Cat.": revenue_display.get(c.get('revenue_category', 'unknown'), 'Unknown'),
+            "Employees": c.get('estimated_employees', 'Unknown'),
+            "ICP Score": c.get('icp_score', 0),
+            "ICP Tier": c.get('icp_tier', 'D'),
+            "Confidence": c.get('confidence', 'Unknown'),
+            "Source": c.get('source_model', 'Unknown'),
+            "Segment": str(c.get('search_segment', 'Unknown'))[:15],
+            "Relaxation": c.get('relaxation_level', 0)
+        }
 
-            row_data = {
-                "#": i + 1,
-                "Company": c.get('name', 'Unknown'),
-                "Industry": c.get('industry_category', 'Unknown'),
-                "Revenue Cat.": revenue_display.get(c.get('revenue_category', 'unknown'), 'Unknown'),
-                "Employees": c.get('estimated_employees', 'Unknown'),
-                "ICP Score": c.get('icp_score', 0),
-                "ICP Tier": c.get('icp_tier', 'D'),
-                "Source": c.get('source_model', 'Unknown'),
-                "Segment": c.get('search_segment', 'Unknown')[:15],
-                "Relaxation": c.get('relaxation_level', 0)
-            }
+        results_data.append(row_data)
 
-            results_data.append(row_data)
+    if not results_data:
+        st.info("No companies match the current filters")
+        return
 
-        if results_data:
-            df = pd.DataFrame(results_data)
+    # Create DataFrame
+    df = pd.DataFrame(results_data)
 
-            if len(st.session_state.search_results) > 100:
-                st.write(f"Showing {len(df)} of {len(st.session_state.search_results):,} companies")
+    # Display count
+    st.write(f"Showing {len(df):,} companies after filtering")
 
-            # Style the dataframe
-            def style_tier(val):
-                if val == 'A':
-                    return 'background-color: #90EE90'
-                elif val == 'B':
-                    return 'background-color: #98FB98'
-                elif val == 'C':
-                    return 'background-color: #FFE4B5'
-                else:
-                    return ''
+    # Initialize page state
+    if 'results_page' not in st.session_state:
+        st.session_state.results_page = 1
 
-            def style_relaxation(val):
-                if val == 0:
-                    return 'color: green'
-                elif val <= 2:
-                    return 'color: orange'
-                else:
-                    return 'color: red'
+    # Pagination controls
+    items_per_page = st.selectbox(
+        "Items per page",
+        options=[25, 50, 100, 200, 500],
+        index=1,  # Default to 50
+        key="items_per_page"
+    )
 
-            # Pagination
-            if len(df) > 500:
-                page_size = 100
-                page = st.number_input("Page", 1, (len(df) + page_size - 1) // page_size, 1)
-                start_idx = (page - 1) * page_size
-                end_idx = min(start_idx + page_size, len(df))
-                st.dataframe(styled_df.iloc[start_idx:end_idx], use_container_width=True, height=400)
-            else:
-                st.dataframe(styled_df, use_container_width=True, height=min(400, len(df) * 35 + 50))
+    # Calculate pagination
+    total_pages = max(1, (len(df) - 1) // items_per_page + 1)
+
+    # Ensure current page is valid
+    if st.session_state.results_page > total_pages:
+        st.session_state.results_page = total_pages
+    if st.session_state.results_page < 1:
+        st.session_state.results_page = 1
+
+    # Create columns for pagination controls
+    pag_col1, pag_col2, pag_col3, pag_col4, pag_col5 = st.columns([1, 1, 2, 1, 1])
+
+    with pag_col1:
+        if st.button("⏮️ First", disabled=(st.session_state.results_page == 1)):
+            st.session_state.results_page = 1
+            st.rerun()
+
+    with pag_col2:
+        if st.button("◀️ Prev", disabled=(st.session_state.results_page == 1)):
+            st.session_state.results_page -= 1
+            st.rerun()
+
+    with pag_col3:
+        # Page selector
+        new_page = st.number_input(
+            "Page",
+            min_value=1,
+            max_value=total_pages,
+            value=st.session_state.results_page,
+            step=1,
+            label_visibility="collapsed"
+        )
+        if new_page != st.session_state.results_page:
+            st.session_state.results_page = new_page
+            st.rerun()
+        st.caption(f"Page {st.session_state.results_page} of {total_pages}")
+
+    with pag_col4:
+        if st.button("Next ▶️", disabled=(st.session_state.results_page == total_pages)):
+            st.session_state.results_page += 1
+            st.rerun()
+
+    with pag_col5:
+        if st.button("Last ⏭️", disabled=(st.session_state.results_page == total_pages)):
+            st.session_state.results_page = total_pages
+            st.rerun()
+
+    # Calculate slice indices
+    start_idx = (st.session_state.results_page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(df))
+
+    # Show current range
+    st.caption(f"Showing companies {start_idx + 1} to {end_idx} of {len(df)}")
+
+    # Apply styling functions
+    def style_tier(row):
+        """Style the entire row based on ICP Tier"""
+        styles = [''] * len(row)
+        tier_idx = row.index.get_loc('ICP Tier')
+
+        if row['ICP Tier'] == 'A':
+            styles = ['background-color: #90EE90' if i == tier_idx else '' for i in range(len(row))]
+        elif row['ICP Tier'] == 'B':
+            styles = ['background-color: #98FB98' if i == tier_idx else '' for i in range(len(row))]
+        elif row['ICP Tier'] == 'C':
+            styles = ['background-color: #FFE4B5' if i == tier_idx else '' for i in range(len(row))]
+
+        return styles
+
+    def style_relaxation(val):
+        """Style relaxation level"""
+        if pd.isna(val):
+            return ''
+        if val == 0:
+            return 'color: green'
+        elif val <= 2:
+            return 'color: orange'
+        else:
+            return 'color: red'
+
+    def style_confidence(val):
+        """Style confidence level"""
+        if pd.isna(val) or val == 'Unknown':
+            return ''
+        if val == 'high':
+            return 'color: green; font-weight: bold'
+        elif val == 'medium':
+            return 'color: orange'
+        else:
+            return 'color: red'
+
+    # Get the page slice
+    df_page = df.iloc[start_idx:end_idx].copy()
+
+    # Apply styles to the page
+    styled_df = df_page.style.apply(style_tier, axis=1)
+
+    # Apply column-specific styles using .map instead of deprecated .applymap
+    if 'Relaxation' in df_page.columns:
+        styled_df = styled_df.map(style_relaxation, subset=['Relaxation'])
+    if 'Confidence' in df_page.columns:
+        styled_df = styled_df.map(style_confidence, subset=['Confidence'])
+
+    # Display the styled dataframe
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        height=min(600, len(df_page) * 35 + 50)
+    )
+
+    # Export filtered results option
+    if len(df) > 0:
+        st.divider()
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label=f"📥 Download filtered results ({len(df)} companies)",
+            data=csv,
+            file_name=f"filtered_companies_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
