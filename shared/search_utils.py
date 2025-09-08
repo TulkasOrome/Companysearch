@@ -1,13 +1,15 @@
 # shared/search_utils.py
 """
-Search utilities with deduplication strategy optimized for LARGE SCALE (10K+) searches
-FIXED: Reduced batch size to avoid token limits
+Search utilities with deduplication strategy and revenue validation
+True parallel execution with Serper revenue validation when revenue criteria is set
 """
 
 import asyncio
+import aiohttp
 import json
 import time
 import os
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import asdict
 from shared.data_models import SearchCriteria, EnhancedCompanyEntry
@@ -233,7 +235,7 @@ class EnhancedSearchStrategistAgent:
                 locations.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
             prompt_parts.append("LOCATION: " + "; ".join(locations))
 
-        # Financial
+        # Financial - NOTE: We'll validate this with Serper later
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
                 prompt_parts.append(
@@ -241,6 +243,7 @@ class EnhancedSearchStrategistAgent:
             elif criteria.financial.revenue_min:
                 prompt_parts.append(
                     f"REVENUE: >${int(criteria.financial.revenue_min / 1e6)}M {criteria.financial.revenue_currency}")
+            prompt_parts.append("NOTE: Cast a wide net - we'll validate revenue later")
 
         # Employees
         if criteria.organizational.employee_count_min:
@@ -322,7 +325,11 @@ class EnhancedSearchStrategistAgent:
             "data_sources": [],
             "validation_notes": None,
             "source_model": None,
-            "search_segment": None
+            "search_segment": None,
+            # New fields for revenue validation
+            "verified_revenue": None,
+            "revenue_validated": False,
+            "revenue_validation_source": None
         }
 
         for key, default_value in defaults.items():
@@ -363,6 +370,68 @@ class EnhancedSearchStrategistAgent:
         company.icp_tier = tier
 
         return company
+
+
+async def validate_company_revenue(company: Any, criteria: SearchCriteria, serper_key: str) -> Tuple[Any, bool]:
+    """
+    Validate a single company's revenue using Serper
+    Returns: (company, meets_criteria)
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Build search query
+            company_name = company.name if hasattr(company, 'name') else company.get('name', '')
+            currency = criteria.financial.revenue_currency
+
+            # Try multiple query formats for better results
+            queries = [
+                f'"{company_name}" annual revenue {currency} million',
+                f'"{company_name}" revenue turnover {currency}',
+                f'"{company_name}" "annual revenue"'
+            ]
+
+            verified_revenue = None
+
+            for query in queries:
+                url = "https://google.serper.dev/search"
+                headers = {"X-API-KEY": serper_key, "Content-Type": "application/json"}
+
+                # Add country context for better results
+                gl_map = {"AUD": "au", "USD": "us", "GBP": "uk", "EUR": "de"}
+                data = {
+                    "q": query,
+                    "num": 5,
+                    "gl": gl_map.get(currency, "au")
+                }
+
+                async with session.post(url, json=data, headers=headers) as response:
+                    if response.status == 200:
+                        result = await response.json()
+
+                        # Parse revenue from search results
+                        for item in result.get('organic', []):
+                            title = item.get('title', '')
+                            snippet = item.get('snippet', '')
+                            combined = f"{title} {snippet}".lower()
+
+                            # Look for revenue patterns
+                            revenue_patterns = [
+                                r'\$?([\d,]+\.?\d*)\s*(million|billion|m|b)\s*(revenue|turnover|sales)?',
+                                r'(revenue|turnover|sales)[:\s]+\$?([\d,]+\.?\d*)\s*(million|billion|m|b)',
+                                r'annual\s*(revenue|turnover|sales).*?\$?([\d,]+\.?\d*)\s*(million|billion|m|b)'
+                            ]
+
+                            for pattern in revenue_patterns:
+                                matches = re.findall(pattern, combined, re.IGNORECASE)
+                                if matches:
+                                    # Extract the numeric value
+                                    for match in matches:
+                                        try:
+                                            # Handle different match group positions
+                                            if isinstance(match, tuple):
+                                                # Find the numeric part
+                                                for part in match:
+                                                    if re.match(r'^[\d,]+\.?\d*
 
 
 def determine_scale_strategy(
@@ -611,14 +680,27 @@ def generate_scale_instructions(
 async def execute_parallel_search(
         models: List[str],
         criteria: SearchCriteria,
-        target_count: int
+        target_count: int,
+        serper_key: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Execute search across multiple models optimized for LARGE SCALE (10K+)"""
+    """Execute search across multiple models - TRUE PARALLEL EXECUTION with revenue validation"""
 
     print(f"\n{'=' * 60}")
-    print(f"LARGE SCALE PARALLEL SEARCH")
+    print(f"TRUE PARALLEL SEARCH WITH REVENUE VALIDATION")
     print(f"{'=' * 60}")
     print(f"Target: {target_count} companies across {len(models)} models")
+
+    # Check if revenue validation is needed
+    needs_revenue_validation = (
+            serper_key and
+            (criteria.financial.revenue_min is not None or criteria.financial.revenue_max is not None)
+    )
+
+    if needs_revenue_validation:
+        print(
+            f"Revenue Validation: ENABLED (min: ${criteria.financial.revenue_min / 1e6:.0f}M, max: ${criteria.financial.revenue_max / 1e6:.0f}M)")
+    else:
+        print(f"Revenue Validation: DISABLED")
 
     # Determine strategy for large scale
     strategy, strategy_description, strategy_params = determine_scale_strategy(
@@ -633,50 +715,48 @@ async def execute_parallel_search(
     print(f"Calls per model: {strategy_params['calls_per_model']}")
     print(f"{'=' * 60}\n")
 
-    # Calculate targets - UPDATED to use new batch size
-    max_per_call = strategy_params['max_per_call']  # Now 15 instead of 50
+    # Calculate targets
+    max_per_call = strategy_params['max_per_call']  # 15 companies per call
     calls_per_model = strategy_params['calls_per_model']
     base_per_model = target_count // len(models)
 
-    # Execute searches
-    all_companies = []
-    model_stats = {}
-
-    for model_idx, model in enumerate(models):
+    # Create async task for each model
+    async def search_with_model(model_idx: int, model: str) -> Dict[str, Any]:
+        """Async function to search with a single model"""
         model_companies = []
         model_target = base_per_model + (1 if model_idx < (target_count % len(models)) else 0)
 
-        print(f"\nAgent {model_idx + 1} ({model}):")
-        print(f"  Total target: {model_target} companies")
-        print(f"  Will make {calls_per_model} calls (up to {max_per_call} companies each)")
+        print(f"\n🚀 Agent {model_idx + 1} ({model}) STARTING:")
+        print(f"  Target: {model_target} companies")
+        print(f"  Will make {calls_per_model} calls")
 
-        # Make multiple calls per model for large searches
-        for call_num in range(1, min(calls_per_model + 1, (model_target + max_per_call - 1) // max_per_call + 1)):
-            # Calculate this call's target
-            remaining = model_target - len(model_companies)
-            call_target = min(max_per_call, remaining)
+        start_time = time.time()
 
-            if call_target <= 0:
-                break
+        try:
+            # Make multiple calls for this model
+            for call_num in range(1, min(calls_per_model + 1, (model_target + max_per_call - 1) // max_per_call + 1)):
+                remaining = model_target - len(model_companies)
+                call_target = min(max_per_call, remaining)
 
-            # Generate unique instructions for this call
-            unique_instructions = generate_scale_instructions(
-                model_idx,
-                len(models),
-                criteria,
-                strategy,
-                strategy_params,
-                model_target,
-                call_num
-            )
+                if call_target <= 0:
+                    break
 
-            print(f"  Call {call_num}: Requesting {call_target} companies")
-            print(f"    Segment: {unique_instructions.get('segment_description', 'Not specified')}")
+                # Generate unique instructions for this call
+                unique_instructions = generate_scale_instructions(
+                    model_idx,
+                    len(models),
+                    criteria,
+                    strategy,
+                    strategy_params,
+                    model_target,
+                    call_num
+                )
 
-            # Create agent and execute
-            agent = EnhancedSearchStrategistAgent(deployment_name=model)
+                print(f"  {model} - Call {call_num}: Requesting {call_target} companies")
 
-            try:
+                # Create agent and execute
+                agent = EnhancedSearchStrategistAgent(deployment_name=model)
+
                 result = await agent.generate_enhanced_strategy(
                     criteria,
                     target_count=call_target,
@@ -685,26 +765,116 @@ async def execute_parallel_search(
 
                 companies = result.get('companies', [])
                 model_companies.extend(companies)
-                print(f"    Found: {len(companies)} companies")
+                print(f"  {model} - Call {call_num}: Found {len(companies)} companies")
 
-                # Log if we got fewer than requested
                 if len(companies) < call_target:
-                    print(f"    WARNING: Got fewer companies than requested ({len(companies)}/{call_target})")
+                    print(f"  {model} - WARNING: Got fewer than requested ({len(companies)}/{call_target})")
 
-                # Rate limiting between calls
+                # Small delay between calls for same model
                 if call_num < calls_per_model:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.2)
 
-            except Exception as e:
-                print(f"    Error: {str(e)}")
+            execution_time = time.time() - start_time
+            print(f"✅ {model} COMPLETED in {execution_time:.1f}s - Found {len(model_companies)} companies")
 
-        all_companies.extend(model_companies)
-        model_stats[model] = {
-            'target': model_target,
-            'found': len(model_companies),
-            'calls_made': call_num,
-            'success_rate': (len(model_companies) / model_target * 100) if model_target > 0 else 0
-        }
+            return {
+                'model': model,
+                'companies': model_companies,
+                'stats': {
+                    'target': model_target,
+                    'found': len(model_companies),
+                    'calls_made': call_num,
+                    'execution_time': execution_time,
+                    'success_rate': (len(model_companies) / model_target * 100) if model_target > 0 else 0
+                }
+            }
+
+        except Exception as e:
+            print(f"❌ {model} FAILED: {str(e)}")
+            return {
+                'model': model,
+                'companies': [],
+                'stats': {
+                    'target': model_target,
+                    'found': 0,
+                    'calls_made': 0,
+                    'execution_time': time.time() - start_time,
+                    'success_rate': 0,
+                    'error': str(e)
+                }
+            }
+
+    # CREATE ALL TASKS AT ONCE - TRUE PARALLEL EXECUTION
+    print("\n🚀 LAUNCHING ALL MODELS IN PARALLEL...")
+    tasks = [search_with_model(idx, model) for idx, model in enumerate(models)]
+
+    # EXECUTE ALL TASKS SIMULTANEOUSLY
+    start_time = time.time()
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+    total_execution_time = time.time() - start_time
+
+    print(f"\n✅ ALL MODELS COMPLETED IN {total_execution_time:.1f} SECONDS")
+
+    # Collect all companies and stats
+    all_companies = []
+    model_stats = {}
+
+    for result in results:
+        model = result['model']
+        companies = result['companies']
+        stats = result['stats']
+
+        all_companies.extend(companies)
+        model_stats[model] = stats
+
+    # Revenue validation if criteria requires it
+    revenue_validated_companies = []
+    companies_removed_by_revenue = 0
+
+    if needs_revenue_validation and all_companies:
+        print(f"\n{'=' * 60}")
+        print(f"💰 REVENUE VALIDATION PHASE")
+        print(f"{'=' * 60}")
+        print(f"Validating revenue for {len(all_companies)} companies...")
+        print(
+            f"Criteria: ${criteria.financial.revenue_min / 1e6:.0f}M - ${criteria.financial.revenue_max / 1e6:.0f}M {criteria.financial.revenue_currency}")
+
+        # Validate all companies in parallel batches
+        validation_batch_size = 10  # Process 10 at a time to avoid rate limits
+
+        for i in range(0, len(all_companies), validation_batch_size):
+            batch = all_companies[i:i + validation_batch_size]
+            print(f"\nValidating batch {i // validation_batch_size + 1} ({len(batch)} companies)...")
+
+            # Create validation tasks for this batch
+            validation_tasks = [
+                validate_company_revenue(company, criteria, serper_key)
+                for company in batch
+            ]
+
+            # Execute batch validations
+            batch_results = await asyncio.gather(*validation_tasks, return_exceptions=False)
+
+            # Process results
+            for company, meets_criteria in batch_results:
+                if meets_criteria:
+                    revenue_validated_companies.append(company)
+                else:
+                    companies_removed_by_revenue += 1
+                    print(
+                        f"  ✗ Removed: {company.name if hasattr(company, 'name') else company.get('name', '')} (doesn't meet revenue criteria)")
+
+            # Rate limiting between batches
+            if i + validation_batch_size < len(all_companies):
+                await asyncio.sleep(0.5)
+
+        print(f"\n💰 Revenue Validation Complete:")
+        print(f"  - Companies validated: {len(all_companies)}")
+        print(f"  - Companies meeting criteria: {len(revenue_validated_companies)}")
+        print(f"  - Companies removed: {companies_removed_by_revenue}")
+
+        # Use validated companies
+        all_companies = revenue_validated_companies
 
     # Deduplication
     print(f"\n{'=' * 60}")
@@ -716,7 +886,10 @@ async def execute_parallel_search(
     unique_companies = []
 
     for company in all_companies:
-        company_name = company.name.lower().strip()
+        if hasattr(company, 'name'):
+            company_name = company.name.lower().strip()
+        else:
+            company_name = company.get('name', '').lower().strip()
 
         # Create core name for deduplication
         name_core = company_name
@@ -734,13 +907,17 @@ async def execute_parallel_search(
         unique_companies = unique_companies[:target_count]
 
     # Calculate final statistics
-    total_found = len(all_companies)
+    total_found_before_validation = sum(len(r['companies']) for r in results)
+    total_after_validation = len(all_companies) if needs_revenue_validation else total_found_before_validation
     total_unique = len(unique_companies)
-    duplicates_removed = total_found - total_unique
-    dedup_rate = (duplicates_removed / total_found * 100) if total_found > 0 else 0
+    duplicates_removed = len(all_companies) - total_unique
+    dedup_rate = (duplicates_removed / len(all_companies) * 100) if all_companies else 0
     achievement_rate = (total_unique / target_count * 100) if target_count > 0 else 0
 
-    print(f"Total found: {total_found}")
+    print(f"Total found (before validation): {total_found_before_validation}")
+    if needs_revenue_validation:
+        print(f"After revenue validation: {total_after_validation}")
+        print(f"Removed by revenue criteria: {companies_removed_by_revenue}")
     print(f"Unique companies: {total_unique}")
     print(f"Duplicates removed: {duplicates_removed} ({dedup_rate:.1f}%)")
     print(f"Target achievement: {total_unique}/{target_count} ({achievement_rate:.1f}%)")
@@ -753,24 +930,632 @@ async def execute_parallel_search(
         print(f"  Target: {stats['target']}")
         print(f"  Found: {stats['found']}")
         print(f"  Calls: {stats['calls_made']}")
+        print(f"  Time: {stats.get('execution_time', 0):.1f}s")
         print(f"  Success: {stats['success_rate']:.1f}%")
+        if 'error' in stats:
+            print(f"  Error: {stats['error']}")
     print(f"{'=' * 60}\n")
 
     return {
         'companies': unique_companies,
         'metadata': {
             'parallel_execution': True,
+            'true_parallel': True,
+            'total_execution_time': total_execution_time,
             'scale_strategy': strategy,
             'strategy_description': strategy_description,
             'models_used': models,
             'model_stats': model_stats,
-            'total_companies_before_dedup': total_found,
+            'total_companies_before_validation': total_found_before_validation,
+            'total_companies_after_validation': total_after_validation,
+            'companies_removed_by_revenue': companies_removed_by_revenue if needs_revenue_validation else 0,
             'total_companies_after_dedup': total_unique,
             'duplicates_removed': duplicates_removed,
             'deduplication_rate': dedup_rate,
             'target_count': target_count,
             'target_achievement_rate': achievement_rate,
             'total_api_calls': sum(s['calls_made'] for s in model_stats.values()),
+            'revenue_validated': needs_revenue_validation,
+            'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S")
+        }
+    }
+
+, str(part).replace(',', '')):
+amount = float(str(part).replace(',', ''))
+# Find the unit (million/billion)
+unit = None
+for p in match:
+    if
+str(p).lower() in ['million', 'billion', 'm', 'b']: \
+    unit = str(p).lower()
+break
+
+if unit:
+    if unit in ['billion', 'b']:
+        amount *= 1000  # Convert to millions
+
+    verified_revenue = amount
+    break
+
+if verified_revenue:
+    break
+except:
+continue
+
+if verified_revenue:
+    # Update company with verified revenue
+    # Handle both Pydantic models and dictionaries
+    if hasattr(company, '__setattr__'):
+        # Pydantic model - use setattr
+        setattr(company, 'verified_revenue', f"${verified_revenue:.0f}M {currency}")
+        setattr(company, 'revenue_validated', True)
+        setattr(company, 'revenue_validation_source', "serper_web_search")
+    else:
+        # Dictionary - use item assignment
+        company['verified_revenue'] = f"${verified_revenue:.0f}M {currency}"
+        company['revenue_validated'] = True
+        company['revenue_validation_source'] = "serper_web_search"
+
+    print(f"  ✓ {company_name}: ${verified_revenue:.0f}M {currency}")
+
+    # Check if it meets criteria
+    meets_min = True
+    meets_max = True
+
+    if criteria.financial.revenue_min:
+        meets_min = verified_revenue * 1_000_000 >= criteria.financial.revenue_min
+
+    if criteria.financial.revenue_max:
+        meets_max = verified_revenue * 1_000_000 <= criteria.financial.revenue_max
+
+    return company, (meets_min and meets_max)
+
+if verified_revenue:
+    break
+
+    # If no revenue found, mark as unverified but keep the company
+if not verified_revenue:
+    print(f"  ? {company_name}: Revenue not found")
+    # Handle both Pydantic models and dictionaries
+    if hasattr(company, '__setattr__'):
+        # Pydantic model - use setattr
+        setattr(company, 'revenue_validated', False)
+        setattr(company, 'revenue_validation_source', "not_found")
+    else:
+        # Dictionary - use item assignment
+        company['revenue_validated'] = False
+        company['revenue_validation_source'] = "not_found"
+
+    # Keep companies where revenue couldn't be verified (might be private companies)
+    return company, True  # Assume they meet criteria if we can't verify
+
+except Exception as e:
+print(f"  ✗ Failed to validate {company_name}: {e}")
+return company, True  # Keep on error
+
+
+def determine_scale_strategy(
+        num_models: int,
+        target_count: int,
+        criteria: SearchCriteria
+) -> Tuple[str, str, Dict[str, Any]]:
+    """
+    Determine the best strategy for LARGE SCALE searches (10K+ companies)
+    Returns: (strategy_name, strategy_description, strategy_params)
+    """
+
+    # Analyze the search criteria
+    has_multiple_locations = len(criteria.location.cities) > 1 or len(criteria.location.countries) > 1
+    has_multiple_industries = len(criteria.industries) > 1
+    num_locations = len(criteria.location.cities) if criteria.location.cities else len(criteria.location.countries)
+    num_industries = len(criteria.industries)
+
+    # UPDATED: Reduced from 50 to 15 companies per call
+    strategy_params = {
+        'max_per_call': 15,  # Reduced from 50 to avoid token limits
+        'calls_per_model': 1,  # Will be calculated
+        'total_calls_needed': 1,  # Will be calculated
+    }
+
+    # Calculate calls needed with new batch size
+    strategy_params['total_calls_needed'] = (target_count + 14) // 15  # Round up
+    strategy_params['calls_per_model'] = (strategy_params['total_calls_needed'] + num_models - 1) // num_models
+
+    # Decision tree for LARGE SCALE searches
+    if target_count >= 5000:
+        # For massive searches, use hybrid approach
+        return (
+            "HYBRID_SCALE",
+            f"Hybrid strategy for {target_count} companies using alphabet + secondary dimensions",
+            strategy_params
+        )
+
+    elif target_count >= 1000:
+        # For large searches, use alphabet with sub-segmentation
+        return (
+            "ALPHABET_PRIMARY",
+            f"Alphabet segmentation with size/age sub-segments for {target_count} companies",
+            strategy_params
+        )
+
+    elif has_multiple_locations and num_locations >= num_models * 2:
+        # Geographic with rank offset for each location
+        return (
+            "GEOGRAPHIC_PRIMARY",
+            f"Geographic segmentation across {num_locations} locations with rank offsets",
+            strategy_params
+        )
+
+    elif has_multiple_industries and num_industries >= num_models * 2:
+        # Industry with rank offset for each industry
+        return (
+            "INDUSTRY_PRIMARY",
+            f"Industry segmentation across {num_industries} industries with rank offsets",
+            strategy_params
+        )
+
+    elif target_count >= 500:
+        # Rank-based discovery for medium-large searches
+        return (
+            "RANK_DISCOVERY",
+            f"Rank-based discovery across {target_count} companies in tiers",
+            strategy_params
+        )
+
+    else:
+        # Default to simple alphabet for smaller searches
+        return (
+            "ALPHABET_PRIMARY",
+            "Alphabet segmentation for complete coverage",
+            strategy_params
+        )
+
+
+def generate_scale_instructions(
+        model_index: int,
+        total_models: int,
+        criteria: SearchCriteria,
+        strategy: str,
+        strategy_params: Dict[str, Any],
+        target_per_model: int,
+        call_number: int = 1
+) -> Dict[str, Any]:
+    """
+    Generate unique instructions for LARGE SCALE searches
+    Handles multiple calls per model for 10K+ searches
+    """
+
+    instructions = {
+        'agent_number': model_index + 1,
+        'total_agents': total_models,
+        'strategy': strategy,
+        'segment_id': f"agent_{model_index + 1}_call_{call_number}",
+        'call_number': call_number,
+        'total_calls': strategy_params['calls_per_model']
+    }
+
+    if strategy == "ALPHABET_PRIMARY":
+        # For large scale, each model gets one or more letters
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+        if target_per_model <= 500:
+            # Simple letter assignment
+            letters_per_model = len(alphabet) / total_models
+            start_idx = int(model_index * letters_per_model)
+            end_idx = int((model_index + 1) * letters_per_model) - 1
+            if model_index == total_models - 1:
+                end_idx = len(alphabet) - 1
+
+            instructions['letter'] = alphabet[
+                start_idx] if start_idx == end_idx else f"{alphabet[start_idx]}-{alphabet[end_idx]}"
+            instructions['sub_segment'] = 'all'
+
+        else:
+            # For very large searches, use letter + sub-segment
+            # Each model gets fewer letters but searches deeper
+            letters_per_model = max(1, len(alphabet) // (total_models * 2))
+            letter_index = (model_index * letters_per_model + (call_number - 1)) % len(alphabet)
+            instructions['letter'] = alphabet[letter_index]
+
+            # Rotate through sub-segments for different calls
+            sub_segments = ['large', 'medium', 'small', 'established', 'emerging']
+            instructions['sub_segment'] = sub_segments[(call_number - 1) % len(sub_segments)]
+
+        instructions[
+            'segment_description'] = f"Find companies starting with {instructions['letter']} ({instructions['sub_segment']})"
+
+    elif strategy == "HYBRID_SCALE":
+        # For 5K-10K searches, combine multiple dimensions
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+        # Primary: Alphabet ranges
+        letters_per_model = 5  # Each model gets 5-6 letters
+        start_idx = model_index * letters_per_model
+        end_idx = min(start_idx + letters_per_model - 1, len(alphabet) - 1)
+
+        instructions['primary_dimension'] = 'alphabet'
+        instructions['letter_range'] = f"{alphabet[start_idx]}-{alphabet[end_idx]}"
+
+        # Secondary: Rotate through other dimensions based on call number
+        secondary_options = []
+
+        if criteria.industries and len(criteria.industries) > 1:
+            secondary_options.append(('industry_focus', criteria.industries))
+
+        if criteria.location.cities and len(criteria.location.cities) > 1:
+            secondary_options.append(('location_focus', criteria.location.cities))
+
+        secondary_options.append(('size_focus', ['large', 'medium', 'small']))
+
+        if secondary_options:
+            secondary_idx = (call_number - 1) % len(secondary_options)
+            secondary_type, secondary_values = secondary_options[secondary_idx]
+            instructions['secondary_dimension'] = secondary_type
+
+            if secondary_type == 'industry_focus':
+                # Assign subset of industries
+                ind_per_call = max(1, len(secondary_values) // strategy_params['calls_per_model'])
+                start = (call_number - 1) * ind_per_call
+                end = min(start + ind_per_call, len(secondary_values))
+                instructions['industry_subset'] = [ind['name'] for ind in secondary_values[start:end]]
+
+            elif secondary_type == 'location_focus':
+                # Assign subset of locations
+                loc_per_call = max(1, len(secondary_values) // strategy_params['calls_per_model'])
+                start = (call_number - 1) * loc_per_call
+                end = min(start + loc_per_call, len(secondary_values))
+                instructions['location_subset'] = secondary_values[start:end]
+
+            elif secondary_type == 'size_focus':
+                instructions['size_subset'] = secondary_values[(call_number - 1) % len(secondary_values)]
+
+        instructions[
+            'segment_description'] = f"Companies {instructions['letter_range']} with {instructions.get('secondary_dimension', 'all')} focus"
+
+    elif strategy == "RANK_DISCOVERY":
+        # For rank-based discovery at scale
+        total_ranks = target_per_model * total_models
+        ranks_per_segment = total_ranks // (total_models * strategy_params['calls_per_model'])
+
+        base_rank = model_index * target_per_model
+        call_offset = (call_number - 1) * ranks_per_segment
+
+        instructions['rank_start'] = base_rank + call_offset + 1
+        instructions['rank_end'] = base_rank + call_offset + ranks_per_segment
+
+        # Define tier descriptions
+        tier_descriptions = [
+            "industry leaders and well-known companies",
+            "established mid-market players",
+            "growing companies with regional presence",
+            "emerging businesses and startups",
+            "niche players and specialized firms",
+            "local businesses and lesser-known entities"
+        ]
+
+        tier_index = min((instructions['rank_start'] - 1) // 500, len(tier_descriptions) - 1)
+        instructions['tier_description'] = tier_descriptions[tier_index]
+        instructions[
+            'segment_description'] = f"Companies ranked {instructions['rank_start']}-{instructions['rank_end']} ({instructions['tier_description']})"
+
+    elif strategy == "GEOGRAPHIC_PRIMARY":
+        # Geographic with rank offsets for scale
+        if criteria.location.cities:
+            locations = criteria.location.cities
+        else:
+            locations = criteria.location.countries
+
+        locs_per_model = max(1, len(locations) // total_models)
+        start_idx = model_index * locs_per_model
+        end_idx = start_idx + locs_per_model
+
+        if model_index == total_models - 1:
+            end_idx = len(locations)
+
+        instructions['assigned_locations'] = locations[start_idx:end_idx]
+        instructions['rank_offset'] = (call_number - 1) * 100  # Each call goes 100 ranks deeper
+        instructions[
+            'segment_description'] = f"Companies in {', '.join(instructions['assigned_locations'][:3])} (rank offset: {instructions['rank_offset']})"
+
+    elif strategy == "INDUSTRY_PRIMARY":
+        # Industry with rank offsets for scale
+        if criteria.industries:
+            industries = [ind['name'] for ind in criteria.industries]
+
+            ind_per_model = max(1, len(industries) // total_models)
+            start_idx = model_index * ind_per_model
+            end_idx = start_idx + ind_per_model
+
+            if model_index == total_models - 1:
+                end_idx = len(industries)
+
+            instructions['assigned_industries'] = industries[start_idx:end_idx]
+            instructions['rank_offset'] = (call_number - 1) * 100  # Each call goes 100 ranks deeper
+            instructions[
+                'segment_description'] = f"Companies in {', '.join(instructions['assigned_industries'][:3])} (rank offset: {instructions['rank_offset']})"
+
+    return instructions
+
+
+async def execute_parallel_search(
+        models: List[str],
+        criteria: SearchCriteria,
+        target_count: int,
+        serper_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Execute search across multiple models - TRUE PARALLEL EXECUTION with revenue validation"""
+
+    print(f"\n{'=' * 60}")
+    print(f"TRUE PARALLEL SEARCH WITH REVENUE VALIDATION")
+    print(f"{'=' * 60}")
+    print(f"Target: {target_count} companies across {len(models)} models")
+
+    # Check if revenue validation is needed
+    needs_revenue_validation = (
+            serper_key and
+            (criteria.financial.revenue_min is not None or criteria.financial.revenue_max is not None)
+    )
+
+    if needs_revenue_validation:
+        print(
+            f"Revenue Validation: ENABLED (min: ${criteria.financial.revenue_min / 1e6:.0f}M, max: ${criteria.financial.revenue_max / 1e6:.0f}M)")
+    else:
+        print(f"Revenue Validation: DISABLED")
+
+    # Determine strategy for large scale
+    strategy, strategy_description, strategy_params = determine_scale_strategy(
+        len(models),
+        target_count,
+        criteria
+    )
+
+    print(f"Strategy: {strategy}")
+    print(f"Description: {strategy_description}")
+    print(f"Total API calls needed: {strategy_params['total_calls_needed']}")
+    print(f"Calls per model: {strategy_params['calls_per_model']}")
+    print(f"{'=' * 60}\n")
+
+    # Calculate targets
+    max_per_call = strategy_params['max_per_call']  # 15 companies per call
+    calls_per_model = strategy_params['calls_per_model']
+    base_per_model = target_count // len(models)
+
+    # Create async task for each model
+    async def search_with_model(model_idx: int, model: str) -> Dict[str, Any]:
+        """Async function to search with a single model"""
+        model_companies = []
+        model_target = base_per_model + (1 if model_idx < (target_count % len(models)) else 0)
+
+        print(f"\n🚀 Agent {model_idx + 1} ({model}) STARTING:")
+        print(f"  Target: {model_target} companies")
+        print(f"  Will make {calls_per_model} calls")
+
+        start_time = time.time()
+
+        try:
+            # Make multiple calls for this model
+            for call_num in range(1, min(calls_per_model + 1, (model_target + max_per_call - 1) // max_per_call + 1)):
+                remaining = model_target - len(model_companies)
+                call_target = min(max_per_call, remaining)
+
+                if call_target <= 0:
+                    break
+
+                # Generate unique instructions for this call
+                unique_instructions = generate_scale_instructions(
+                    model_idx,
+                    len(models),
+                    criteria,
+                    strategy,
+                    strategy_params,
+                    model_target,
+                    call_num
+                )
+
+                print(f"  {model} - Call {call_num}: Requesting {call_target} companies")
+
+                # Create agent and execute
+                agent = EnhancedSearchStrategistAgent(deployment_name=model)
+
+                result = await agent.generate_enhanced_strategy(
+                    criteria,
+                    target_count=call_target,
+                    unique_instructions=unique_instructions
+                )
+
+                companies = result.get('companies', [])
+                model_companies.extend(companies)
+                print(f"  {model} - Call {call_num}: Found {len(companies)} companies")
+
+                if len(companies) < call_target:
+                    print(f"  {model} - WARNING: Got fewer than requested ({len(companies)}/{call_target})")
+
+                # Small delay between calls for same model
+                if call_num < calls_per_model:
+                    await asyncio.sleep(0.2)
+
+            execution_time = time.time() - start_time
+            print(f"✅ {model} COMPLETED in {execution_time:.1f}s - Found {len(model_companies)} companies")
+
+            return {
+                'model': model,
+                'companies': model_companies,
+                'stats': {
+                    'target': model_target,
+                    'found': len(model_companies),
+                    'calls_made': call_num,
+                    'execution_time': execution_time,
+                    'success_rate': (len(model_companies) / model_target * 100) if model_target > 0 else 0
+                }
+            }
+
+        except Exception as e:
+            print(f"❌ {model} FAILED: {str(e)}")
+            return {
+                'model': model,
+                'companies': [],
+                'stats': {
+                    'target': model_target,
+                    'found': 0,
+                    'calls_made': 0,
+                    'execution_time': time.time() - start_time,
+                    'success_rate': 0,
+                    'error': str(e)
+                }
+            }
+
+    # CREATE ALL TASKS AT ONCE - TRUE PARALLEL EXECUTION
+    print("\n🚀 LAUNCHING ALL MODELS IN PARALLEL...")
+    tasks = [search_with_model(idx, model) for idx, model in enumerate(models)]
+
+    # EXECUTE ALL TASKS SIMULTANEOUSLY
+    start_time = time.time()
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+    total_execution_time = time.time() - start_time
+
+    print(f"\n✅ ALL MODELS COMPLETED IN {total_execution_time:.1f} SECONDS")
+
+    # Collect all companies and stats
+    all_companies = []
+    model_stats = {}
+
+    for result in results:
+        model = result['model']
+        companies = result['companies']
+        stats = result['stats']
+
+        all_companies.extend(companies)
+        model_stats[model] = stats
+
+    # Revenue validation if criteria requires it
+    revenue_validated_companies = []
+    companies_removed_by_revenue = 0
+
+    if needs_revenue_validation and all_companies:
+        print(f"\n{'=' * 60}")
+        print(f"💰 REVENUE VALIDATION PHASE")
+        print(f"{'=' * 60}")
+        print(f"Validating revenue for {len(all_companies)} companies...")
+        print(
+            f"Criteria: ${criteria.financial.revenue_min / 1e6:.0f}M - ${criteria.financial.revenue_max / 1e6:.0f}M {criteria.financial.revenue_currency}")
+
+        # Validate all companies in parallel batches
+        validation_batch_size = 10  # Process 10 at a time to avoid rate limits
+
+        for i in range(0, len(all_companies), validation_batch_size):
+            batch = all_companies[i:i + validation_batch_size]
+            print(f"\nValidating batch {i // validation_batch_size + 1} ({len(batch)} companies)...")
+
+            # Create validation tasks for this batch
+            validation_tasks = [
+                validate_company_revenue(company, criteria, serper_key)
+                for company in batch
+            ]
+
+            # Execute batch validations
+            batch_results = await asyncio.gather(*validation_tasks, return_exceptions=False)
+
+            # Process results
+            for company, meets_criteria in batch_results:
+                if meets_criteria:
+                    revenue_validated_companies.append(company)
+                else:
+                    companies_removed_by_revenue += 1
+                    print(
+                        f"  ✗ Removed: {company.name if hasattr(company, 'name') else company.get('name', '')} (doesn't meet revenue criteria)")
+
+            # Rate limiting between batches
+            if i + validation_batch_size < len(all_companies):
+                await asyncio.sleep(0.5)
+
+        print(f"\n💰 Revenue Validation Complete:")
+        print(f"  - Companies validated: {len(all_companies)}")
+        print(f"  - Companies meeting criteria: {len(revenue_validated_companies)}")
+        print(f"  - Companies removed: {companies_removed_by_revenue}")
+
+        # Use validated companies
+        all_companies = revenue_validated_companies
+
+    # Deduplication
+    print(f"\n{'=' * 60}")
+    print("Deduplication Phase")
+    print(f"{'=' * 60}")
+
+    seen_names = set()
+    seen_name_cores = set()
+    unique_companies = []
+
+    for company in all_companies:
+        if hasattr(company, 'name'):
+            company_name = company.name.lower().strip()
+        else:
+            company_name = company.get('name', '').lower().strip()
+
+        # Create core name for deduplication
+        name_core = company_name
+        for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp', 'llc', 'plc',
+                       '& co', 'and company', 'group', 'holdings', 'international', 'global']:
+            name_core = name_core.replace(suffix, '').strip()
+
+        if name_core not in seen_name_cores and company_name not in seen_names:
+            seen_names.add(company_name)
+            seen_name_cores.add(name_core)
+            unique_companies.append(company)
+
+    # Trim to exact target if over
+    if len(unique_companies) > target_count:
+        unique_companies = unique_companies[:target_count]
+
+    # Calculate final statistics
+    total_found_before_validation = sum(len(r['companies']) for r in results)
+    total_after_validation = len(all_companies) if needs_revenue_validation else total_found_before_validation
+    total_unique = len(unique_companies)
+    duplicates_removed = len(all_companies) - total_unique
+    dedup_rate = (duplicates_removed / len(all_companies) * 100) if all_companies else 0
+    achievement_rate = (total_unique / target_count * 100) if target_count > 0 else 0
+
+    print(f"Total found (before validation): {total_found_before_validation}")
+    if needs_revenue_validation:
+        print(f"After revenue validation: {total_after_validation}")
+        print(f"Removed by revenue criteria: {companies_removed_by_revenue}")
+    print(f"Unique companies: {total_unique}")
+    print(f"Duplicates removed: {duplicates_removed} ({dedup_rate:.1f}%)")
+    print(f"Target achievement: {total_unique}/{target_count} ({achievement_rate:.1f}%)")
+
+    print(f"\n{'=' * 60}")
+    print("Model Performance Summary")
+    print(f"{'=' * 60}")
+    for model, stats in model_stats.items():
+        print(f"{model}:")
+        print(f"  Target: {stats['target']}")
+        print(f"  Found: {stats['found']}")
+        print(f"  Calls: {stats['calls_made']}")
+        print(f"  Time: {stats.get('execution_time', 0):.1f}s")
+        print(f"  Success: {stats['success_rate']:.1f}%")
+        if 'error' in stats:
+            print(f"  Error: {stats['error']}")
+    print(f"{'=' * 60}\n")
+
+    return {
+        'companies': unique_companies,
+        'metadata': {
+            'parallel_execution': True,
+            'true_parallel': True,
+            'total_execution_time': total_execution_time,
+            'scale_strategy': strategy,
+            'strategy_description': strategy_description,
+            'models_used': models,
+            'model_stats': model_stats,
+            'total_companies_before_validation': total_found_before_validation,
+            'total_companies_after_validation': total_after_validation,
+            'companies_removed_by_revenue': companies_removed_by_revenue if needs_revenue_validation else 0,
+            'total_companies_after_dedup': total_unique,
+            'duplicates_removed': duplicates_removed,
+            'deduplication_rate': dedup_rate,
+            'target_count': target_count,
+            'target_achievement_rate': achievement_rate,
+            'total_api_calls': sum(s['calls_made'] for s in model_stats.values()),
+            'revenue_validated': needs_revenue_validation,
             'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S")
         }
     }
