@@ -1,6 +1,7 @@
 # tabs/execute_search_tab.py
 """
 Execute Search Tab - With revenue validation and true parallel execution
+FIXED: Proper async handling for Streamlit environment
 """
 
 import streamlit as st
@@ -8,9 +9,14 @@ import asyncio
 import pandas as pd
 import time
 import traceback
+import nest_asyncio
+import concurrent.futures
 from datetime import datetime
 from shared.search_utils import execute_parallel_search, EnhancedSearchStrategistAgent
 from shared.session_state import update_cost
+
+# Apply nest_asyncio to allow nested event loops in Streamlit
+nest_asyncio.apply()
 
 
 def render_execute_search_tab():
@@ -283,7 +289,7 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, serpe
     st.session_state.model_success_status = {}
 
     if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
-        # PARALLEL EXECUTION
+        # PARALLEL EXECUTION - FIXED VERSION
         status_placeholder.info(
             f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models..."
         )
@@ -308,33 +314,30 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, serpe
             import builtins
             builtins.print = logged_print
 
-            # Run parallel search with revenue validation if needed
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
             add_log("Initializing parallel execution...")
 
-            # Pass serper_key only if revenue criteria exists
-            if has_revenue_criteria:
-                result = loop.run_until_complete(
-                    execute_parallel_search(
-                        st.session_state.selected_models,
-                        st.session_state.current_criteria,
-                        target_count,
-                        serper_key=serper_key
+            # FIXED: Use ThreadPoolExecutor to run async code in a separate thread
+            # This avoids event loop conflicts with Streamlit
+            def run_async_search():
+                """Run the async search in a new event loop in a thread"""
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(
+                        execute_parallel_search(
+                            st.session_state.selected_models,
+                            st.session_state.current_criteria,
+                            target_count,
+                            serper_key=serper_key if has_revenue_criteria else None
+                        )
                     )
-                )
-            else:
-                result = loop.run_until_complete(
-                    execute_parallel_search(
-                        st.session_state.selected_models,
-                        st.session_state.current_criteria,
-                        target_count,
-                        serper_key=None
-                    )
-                )
+                finally:
+                    loop.close()
 
-            loop.close()
+            # Execute in a thread to avoid blocking Streamlit's event loop
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_async_search)
+                result = future.result()  # This will block until complete
 
             # Restore original print
             builtins.print = original_print
@@ -470,15 +473,21 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, serpe
 
                     add_log(f"Call {call_num + 1}/{calls_needed}: Requesting {call_target} companies")
 
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(
-                        agent.generate_enhanced_strategy(
-                            st.session_state.current_criteria,
-                            target_count=call_target
-                        )
-                    )
-                    loop.close()
+                    # Run async code in a new event loop
+                    def run_single_search():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(
+                                agent.generate_enhanced_strategy(
+                                    st.session_state.current_criteria,
+                                    target_count=call_target
+                                )
+                            )
+                        finally:
+                            loop.close()
+
+                    result = run_single_search()
 
                     companies = result.get("companies", [])
                     all_companies.extend(companies)
@@ -503,18 +512,21 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, serpe
                     for i in range(0, len(all_companies), batch_size):
                         batch = all_companies[i:i + batch_size]
 
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
+                        def run_validation_batch():
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                # Create validation tasks
+                                validation_tasks = [
+                                    validate_company_revenue(company, st.session_state.current_criteria, serper_key)
+                                    for company in batch
+                                ]
+                                # Execute validations
+                                return loop.run_until_complete(asyncio.gather(*validation_tasks))
+                            finally:
+                                loop.close()
 
-                        # Create validation tasks
-                        validation_tasks = [
-                            validate_company_revenue(company, st.session_state.current_criteria, serper_key)
-                            for company in batch
-                        ]
-
-                        # Execute validations
-                        batch_results = loop.run_until_complete(asyncio.gather(*validation_tasks))
-                        loop.close()
+                        batch_results = run_validation_batch()
 
                         for company, meets_criteria in batch_results:
                             if meets_criteria:
