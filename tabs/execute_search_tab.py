@@ -1,8 +1,7 @@
 # tabs/execute_search_tab.py
 """
-Execute Search Tab - With recursive approach to ensure target count
-REMOVED: All revenue validation references
-ADDED: Recursive search to meet target count
+Execute Search Tab - Simplified with minimal logging
+No thread interruptions, clean execution
 """
 
 import streamlit as st
@@ -12,20 +11,50 @@ import time
 import traceback
 import nest_asyncio
 import concurrent.futures
-import io
-import sys
-import json
 from datetime import datetime
 from typing import Dict, Any, List
 from shared.session_state import update_cost
-from dataclasses import asdict
+import logging
 
 # Apply nest_asyncio to allow nested event loops in Streamlit
 nest_asyncio.apply()
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def run_parallel_search_wrapper(selected_models, current_criteria, target_count, enable_recursive):
+    """
+    Wrapper function to run parallel search in a separate thread.
+    NO session state access allowed here!
+    """
+    # Import here to avoid circular imports
+    from shared.search_utils import execute_parallel_search
+
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        # Run the async function
+        result = loop.run_until_complete(
+            execute_parallel_search(
+                selected_models,
+                current_criteria,
+                target_count,
+                serper_key=None,
+                enable_recursive=enable_recursive,
+                progress_callback=None
+            )
+        )
+        return result
+    finally:
+        loop.close()
+
 
 def render_execute_search_tab():
-    """Render the Execute Search tab with recursive search"""
+    """Render the Execute Search tab"""
 
     st.header("Execute Company Search")
 
@@ -66,7 +95,7 @@ def render_execute_search_tab():
         if 'all_search_results' not in st.session_state:
             st.session_state.all_search_results = []
 
-        # Search mode selection (New vs Add to Existing)
+        # Search mode selection
         col1, col2 = st.columns([3, 1])
 
         with col1:
@@ -87,15 +116,14 @@ def render_execute_search_tab():
             if st.session_state.search_results:
                 st.metric("Current Results", f"{len(st.session_state.search_results):,} companies")
 
-        # Initialize target count in session state if not exists
+        # Initialize target count
         if 'target_count' not in st.session_state:
             st.session_state.target_count = 100
 
-        # Number of companies selector with synchronized slider and number input
+        # Number of companies selector
         col1, col2 = st.columns([3, 1])
 
         with col1:
-            # Slider for visual selection
             target_count_slider = st.slider(
                 "🎯 Number of Companies to Find",
                 min_value=10,
@@ -107,42 +135,56 @@ def render_execute_search_tab():
             )
 
         with col2:
-            # Number input for precise entry
             target_count_input = st.number_input(
                 "Or enter exact number",
                 min_value=10,
                 max_value=10000,
-                value=target_count_slider,  # Use slider value as default
+                value=target_count_slider,
                 step=10,
                 help="Type exact number of companies",
                 key="target_input"
             )
 
-        # Use the number input value as the final target (it updates when slider changes)
         target_count = target_count_input
         st.session_state.target_count = target_count
 
         # Recursive search option
         enable_recursive = st.checkbox(
-            "🔄 Enable Recursive Search",
+            "🔄 Enable Recursive Search (Recommended)",
             value=True,
-            help="If not enough companies are found, automatically relax criteria and search again"
+            help="Automatically relax criteria if not enough unique companies are found"
         )
 
-        # Compact metrics row
+        # Show deduplication strategy
+        with st.expander("🛡️ Deduplication Strategy", expanded=False):
+            st.markdown("""
+            **Strong Deduplication Enforcement:**
+            - ✅ Each model is assigned a **hard segment** (e.g., companies A-E, F-J, etc.)
+            - ✅ Models **cannot search outside their segment**
+            - ✅ **Exclusion lists** prevent duplicates across models
+            - ✅ **Post-processing validation** rejects non-compliant companies
+            - ✅ Segments are **preserved through relaxation** levels
+
+            **Result:** Near-zero duplicates even at scale!
+            """)
+
+        # Metrics
         col1, col2, col3 = st.columns(3)
 
-        # Calculate requirements
+        # Ensure session state is initialized
+        if 'parallel_execution_enabled' not in st.session_state:
+            st.session_state.parallel_execution_enabled = False
+        if 'selected_models' not in st.session_state:
+            st.session_state.selected_models = ["gpt-4.1"]
+
         if st.session_state.parallel_execution_enabled:
             models_count = len(st.session_state.selected_models)
             calls_per_model = (target_count // (15 * models_count)) + 1
             total_calls = calls_per_model * models_count
-            # Parallel execution: time is based on the slowest model
-            estimated_time = calls_per_model * 12  # 12 seconds per call layer
+            estimated_time = calls_per_model * 12
         else:
             total_calls = (target_count // 15) + 1
-            # Single model: sequential calls
-            estimated_time = total_calls * 12  # 12 seconds per call
+            estimated_time = total_calls * 12
 
         estimated_cost = total_calls * 0.02
 
@@ -171,35 +213,55 @@ def render_execute_search_tab():
         else:
             execute_enabled = True
 
-        # Show distribution info in expander
+        # Show segmentation strategy
         if st.session_state.parallel_execution_enabled:
-            with st.expander("🔄 How search will be distributed", expanded=False):
+            with st.expander("🎯 How Models Will Be Segmented", expanded=False):
                 st.write(f"Using {len(st.session_state.selected_models)} models in parallel")
-                st.write("**True parallel execution:** All models run simultaneously")
 
-                # Determine distribution strategy
-                num_cities = len(criteria.location.cities) if criteria.location.cities else 0
-                num_industries = len(criteria.industries) if criteria.industries else 0
+                # Show alphabet distribution
+                if target_count >= 100:
+                    st.markdown("**Alphabet Segmentation Strategy:**")
+                    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    models = st.session_state.selected_models
+                    letters_per_model = max(1, len(alphabet) // len(models))
+                    remainder = len(alphabet) % len(models)
 
-                if num_cities >= len(st.session_state.selected_models):
-                    st.write(f"✓ **Geographic Distribution**: Each model searches different cities")
-                elif num_industries >= len(st.session_state.selected_models) * 2:
-                    st.write(f"✓ **Industry Distribution**: Each model searches different industries")
-                else:
-                    st.write(f"✓ **Alphabet Distribution**: Each model searches different letter ranges")
+                    for i, model in enumerate(models):
+                        if i < remainder:
+                            # Models that get an extra letter
+                            start_idx = i * (letters_per_model + 1)
+                            end_idx = start_idx + letters_per_model  # inclusive
+                        else:
+                            # Models that get the base number of letters
+                            start_idx = remainder * (letters_per_model + 1) + (i - remainder) * letters_per_model
+                            end_idx = start_idx + letters_per_model - 1
 
-                st.info("All models use your full criteria while focusing on their segments.")
+                        # Ensure we don't go past Z
+                        end_idx = min(end_idx, len(alphabet) - 1)
+
+                        letter_range = f"{alphabet[start_idx]}-{alphabet[end_idx]}"
+                        letters_list = alphabet[start_idx:end_idx + 1]
+                        st.write(
+                            f"**{model}**: Companies starting with **{letter_range}** ({len(letters_list)} letters: {letters_list})")
+
+                st.info("Each model is **locked** to its segment and cannot search outside it!")
 
         st.divider()
 
-        # Single execution button
+        # Execution button
         if execute_enabled:
             if st.button(
                     f"🚀 Search for {target_count:,} Companies",
                     type="primary",
                     use_container_width=True
             ):
-                execute_search(target_count, total_calls, estimated_cost, search_mode, enable_recursive)
+                execute_search(
+                    target_count,
+                    total_calls,
+                    estimated_cost,
+                    search_mode,
+                    enable_recursive
+                )
         else:
             st.button(
                 f"🚀 Search Disabled - Enable Parallel Execution",
@@ -208,125 +270,32 @@ def render_execute_search_tab():
                 disabled=True
             )
 
-        # Display search history if exists
+        # Display search history
         if st.session_state.search_history:
             with st.expander(f"📜 Search History ({len(st.session_state.search_history)} searches)", expanded=False):
-                for i, search in enumerate(reversed(st.session_state.search_history[-5:])):  # Show last 5
+                for i, search in enumerate(reversed(st.session_state.search_history[-5:])):
                     st.write(f"**Search {len(st.session_state.search_history) - i}:** "
                              f"{search['count']} companies, "
                              f"{search['timestamp']}, "
-                             f"Found: {search['found']}")
+                             f"Found: {search['found']}, "
+                             f"Duplicates prevented: {search.get('duplicates_prevented', 0)}")
 
         # Display results
         display_search_results()
 
 
-def relax_criteria(criteria, relaxation_level: int):
-    """
-    Progressively relax search criteria
-    Level 1: Remove CSR requirements
-    Level 2: Expand revenue categories
-    Level 3: Remove industry restrictions
-    Level 4: Expand geographic scope
-    Level 5: Lower employee minimums
-    """
-    import copy
-    from shared.data_models import SearchCriteria, determine_revenue_categories_from_range
-
-    relaxed = copy.deepcopy(criteria)
-
-    if relaxation_level >= 1:
-        # Remove CSR requirements
-        relaxed.behavioral.csr_focus_areas = []
-        relaxed.behavioral.certifications = []
-        relaxed.behavioral.recent_events = []
-        relaxed.behavioral.esg_maturity = None
-
-    if relaxation_level >= 2:
-        # Expand revenue categories
-        if relaxed.financial.revenue_min or relaxed.financial.revenue_max:
-            # Widen by one category on each side
-            if relaxed.financial.revenue_min and relaxed.financial.revenue_min > 1_000_000:
-                relaxed.financial.revenue_min = max(0, relaxed.financial.revenue_min / 10)
-            if relaxed.financial.revenue_max and relaxed.financial.revenue_max < 10_000_000_000:
-                relaxed.financial.revenue_max = min(10_000_000_000, relaxed.financial.revenue_max * 10)
-            # Recalculate categories
-            relaxed.financial.revenue_categories = determine_revenue_categories_from_range(
-                relaxed.financial.revenue_min,
-                relaxed.financial.revenue_max
-            )
-
-    if relaxation_level >= 3:
-        # Remove industry restrictions
-        relaxed.industries = []
-        relaxed.excluded_industries = []
-
-    if relaxation_level >= 4:
-        # Expand geographic scope
-        if relaxed.location.cities:
-            # Move cities to states
-            relaxed.location.states = list(set(relaxed.location.states + ["Any"]))
-            relaxed.location.cities = []
-        elif relaxed.location.states:
-            # Remove state restrictions
-            relaxed.location.states = []
-
-    if relaxation_level >= 5:
-        # Lower employee minimums
-        if relaxed.organizational.employee_count_min:
-            relaxed.organizational.employee_count_min = max(1, relaxed.organizational.employee_count_min // 2)
-
-    return relaxed
-
-
-def run_parallel_search_wrapper(selected_models, current_criteria, target_count):
-    """
-    Wrapper function to run parallel search in a separate thread.
-    This function runs in a thread pool and returns results without updating UI.
-    """
-    # Import here to avoid circular imports
-    from shared.search_utils import execute_parallel_search
-
-    # Create a new event loop for this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    try:
-        # Run the async function and capture ALL output
-        result = loop.run_until_complete(
-            execute_parallel_search(
-                selected_models,
-                current_criteria,
-                target_count,
-                serper_key=None  # No longer needed
-            )
-        )
-        return result
-    finally:
-        loop.close()
-
-
-def run_single_search(agent, criteria, target_count):
-    """Run a single search call in a separate event loop"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(
-            agent.generate_enhanced_strategy(
-                criteria,
-                target_count=target_count
-            )
-        )
-    finally:
-        loop.close()
-
-
 def execute_search(target_count, total_calls, estimated_cost, search_mode, enable_recursive):
-    """Execute the search with progress tracking and recursive approach"""
+    """Execute search with clean thread handling"""
 
-    # Initialize progress tracking
+    # Initialize UI elements
     progress_bar = st.progress(0)
     status_placeholder = st.empty()
+
+    # Ensure session state is initialized
+    if 'selected_models' not in st.session_state:
+        st.session_state.selected_models = ["gpt-4.1"]
+    if 'parallel_execution_enabled' not in st.session_state:
+        st.session_state.parallel_execution_enabled = False
 
     # Store existing results if adding
     existing_results = []
@@ -334,7 +303,6 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
         existing_results = st.session_state.search_results.copy()
         status_placeholder.info(f"Adding to existing {len(existing_results):,} companies...")
     else:
-        # Clear for new search
         st.session_state.search_results = []
         st.session_state.all_search_results = []
 
@@ -343,79 +311,75 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
     st.session_state.model_execution_times = {}
     st.session_state.model_success_status = {}
 
-    # Recursive search implementation
-    all_found_companies = []
-    relaxation_level = 0
-    max_relaxation = 5
-    search_attempts = []
-
-    current_criteria = st.session_state.current_criteria
-    remaining_target = target_count
-
-    while remaining_target > 0 and relaxation_level <= max_relaxation:
-
-        if relaxation_level > 0:
-            status_placeholder.info(f"🔄 Relaxing criteria (Level {relaxation_level}) to find more companies...")
-            current_criteria = relax_criteria(st.session_state.current_criteria, relaxation_level)
-
-        # Execute search with current criteria
+    try:
         if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
             # PARALLEL EXECUTION
             status_placeholder.info(
-                f"🚀 Searching for {remaining_target:,} companies using {len(st.session_state.selected_models)} models..."
-                + (f" (Attempt {relaxation_level + 1})" if relaxation_level > 0 else "")
+                f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models..."
             )
 
-            try:
-                start_time = time.time()
+            start_time = time.time()
 
-                # Extract values from session state BEFORE passing to thread
-                selected_models = st.session_state.selected_models.copy()
+            # CRITICAL: Extract ALL session state values BEFORE thread
+            selected_models = st.session_state.selected_models.copy()
+            current_criteria = st.session_state.current_criteria
 
-                # Execute the parallel search in a thread pool
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    # Submit the job
-                    future = executor.submit(
-                        run_parallel_search_wrapper,
-                        selected_models,
-                        current_criteria,
-                        remaining_target
-                    )
+            # Execute in thread pool
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    run_parallel_search_wrapper,
+                    selected_models,
+                    current_criteria,
+                    target_count,
+                    enable_recursive
+                )
 
-                    # Show progress while waiting
-                    while not future.done():
-                        # Update progress bar
-                        elapsed = time.time() - start_time
-                        estimated_progress = min(elapsed / 30, 0.9)  # Assume ~30 seconds max
-                        progress_bar.progress(estimated_progress)
-                        time.sleep(0.5)
+                # Show progress while waiting
+                while not future.done():
+                    elapsed = time.time() - start_time
+                    estimated_progress = min(elapsed / 30, 0.9)
+                    progress_bar.progress(estimated_progress)
+                    time.sleep(0.5)
 
-                    # Get the result
-                    result = future.result()
+                # Get result
+                result = future.result()
 
-                execution_time = time.time() - start_time
+            execution_time = time.time() - start_time
 
-                # Extract results
-                new_companies = result.get('companies', [])
-                metadata = result.get('metadata', {})
+            # Extract results
+            new_companies = result.get('companies', [])
+            metadata = result.get('metadata', {})
 
-                # Store attempt info
-                search_attempts.append({
-                    'relaxation_level': relaxation_level,
-                    'found': len(new_companies),
-                    'time': execution_time
-                })
+            # Show execution summary
+            if metadata:
+                with st.expander("📊 Execution Summary", expanded=True):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Companies Found", len(new_companies))
+                        st.metric("Execution Time", f"{execution_time:.1f}s")
+                    with col2:
+                        st.metric("Duplicates Prevented", metadata.get('duplicates_prevented', 0))
+                        st.metric("Strategy Used", metadata.get('strategy', 'Unknown'))
+                    with col3:
+                        st.metric("Relaxation Levels", metadata.get('relaxation_levels_used', 0))
+                        st.metric("Models Used", len(selected_models))
 
-                # Deduplicate with already found companies
+                    # Show model performance if available
+                    if metadata.get('model_performance'):
+                        st.markdown("**Model Performance:**")
+                        for model, stats in metadata['model_performance'].items():
+                            st.write(
+                                f"• {model}: {stats.get('found', 0)} unique, {stats.get('duplicates', 0)} duplicates blocked")
+
+            # Process results
+            if existing_results:
+                all_companies = existing_results + new_companies
+
+                # Final deduplication
                 seen_names = set()
-                for company in all_found_companies:
-                    if hasattr(company, 'name'):
-                        seen_names.add(company.name.lower().strip())
-                    else:
-                        seen_names.add(company.get('name', '').lower().strip())
+                unique_companies = []
 
-                unique_new = []
-                for company in new_companies:
+                for company in all_companies:
                     if hasattr(company, 'name'):
                         company_name = company.name.lower().strip()
                     else:
@@ -423,167 +387,92 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
 
                     if company_name not in seen_names:
                         seen_names.add(company_name)
-                        unique_new.append(company)
+                        unique_companies.append(company)
 
-                all_found_companies.extend(unique_new)
-                remaining_target = target_count - len(all_found_companies)
+                st.session_state.search_results = unique_companies
+                new_unique_count = len(unique_companies) - len(existing_results)
 
                 status_placeholder.success(
-                    f"Found {len(unique_new)} new unique companies. "
-                    f"Total: {len(all_found_companies)}/{target_count}"
+                    f"✅ Search complete! Added {new_unique_count} new unique companies!\n"
+                    f"Total: {len(unique_companies):,} companies"
+                )
+            else:
+                st.session_state.search_results = new_companies[:target_count]
+                status_placeholder.success(
+                    f"✅ Found {len(st.session_state.search_results):,} companies!"
                 )
 
-                # Check if we should continue
-                if not enable_recursive or remaining_target <= 0:
-                    break
-
-                # Check if this attempt was too unsuccessful
-                if len(unique_new) < remaining_target * 0.1:  # Less than 10% of what we need
-                    relaxation_level += 1
-
-            except Exception as e:
-                st.error(f"Search failed: {str(e)}")
-                traceback.print_exc()
-                break
+            # Update session state
+            if metadata:
+                st.session_state.model_success_status = metadata.get('model_performance', {})
 
         else:
             # SINGLE MODEL EXECUTION
-            if target_count > 500:
-                st.error("Single model cannot handle more than 500 companies.")
-                break
-            else:
-                status_placeholder.info(f"Searching with {st.session_state.selected_models[0]}...")
+            st.error("Single model execution not recommended for large searches. Please enable parallel execution.")
+            return
 
-                try:
-                    # Import here to avoid circular imports
-                    from shared.search_utils import EnhancedSearchStrategistAgent
+        # Track search in history
+        if 'new_companies' in locals():
+            st.session_state.search_history.append({
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
+                'count': target_count,
+                'found': len(new_companies),
+                'duplicates_prevented': metadata.get('duplicates_prevented', 0) if 'metadata' in locals() else 0,
+                'mode': search_mode.split()[0],
+                'recursive': enable_recursive,
+                'relaxation_levels': metadata.get('relaxation_levels_used', 0) if 'metadata' in locals() else 0
+            })
 
-                    agent = EnhancedSearchStrategistAgent(deployment_name=st.session_state.selected_models[0])
+            # Calculate actual cost
+            actual_cost = estimated_cost * (1 + metadata.get('relaxation_levels_used',
+                                                             0) * 0.3) if 'metadata' in locals() else estimated_cost
+            update_cost(actual_cost)
 
-                    companies_this_round = []
-                    calls_needed = (remaining_target + 14) // 15  # Updated for 15 companies per call
+    except Exception as e:
+        if 'status_placeholder' in locals():
+            status_placeholder.error(f"Search failed: {str(e)}")
+        else:
+            st.error(f"Search failed: {str(e)}")
+        logger.error(f"Search error: {str(e)}")
+        traceback.print_exc()
 
-                    for call_num in range(calls_needed):
-                        call_target = min(15, remaining_target - len(companies_this_round))
-                        progress = (call_num + 1) / calls_needed
-                        progress_bar.progress(progress * 0.7)
-
-                        status_placeholder.info(f"Processing batch {call_num + 1}/{calls_needed}...")
-
-                        # Run async code in a new event loop
-                        result = run_single_search(agent, current_criteria, call_target)
-
-                        companies = result.get("companies", [])
-                        companies_this_round.extend(companies)
-
-                        if call_num < calls_needed - 1:
-                            time.sleep(0.5)
-
-                    # Deduplicate
-                    seen_names = set()
-                    for company in all_found_companies:
-                        if hasattr(company, 'name'):
-                            seen_names.add(company.name.lower().strip())
-                        else:
-                            seen_names.add(company.get('name', '').lower().strip())
-
-                    unique_new = []
-                    for company in companies_this_round:
-                        if hasattr(company, 'name'):
-                            company_name = company.name.lower().strip()
-                        else:
-                            company_name = company.get('name', '').lower().strip()
-
-                        if company_name not in seen_names:
-                            seen_names.add(company_name)
-                            unique_new.append(company)
-
-                    all_found_companies.extend(unique_new)
-                    remaining_target = target_count - len(all_found_companies)
-
-                    if not enable_recursive or remaining_target <= 0:
-                        break
-
-                    relaxation_level += 1
-
-                except Exception as e:
-                    st.error(f"Search failed: {str(e)}")
-                    break
-
-    # Final processing
-    if existing_results:
-        # Combine with existing
-        all_companies = existing_results + all_found_companies
-
-        # Final deduplication
-        seen_names = set()
-        seen_name_cores = set()
-        unique_companies = []
-
-        for company in all_companies:
-            if hasattr(company, 'name'):
-                company_name = company.name.lower().strip()
-            else:
-                company_name = company.get('name', '').lower().strip()
-
-            # Create core name
-            name_core = company_name
-            for suffix in ['pty ltd', 'limited', 'ltd', 'inc', 'corporation', 'corp']:
-                name_core = name_core.replace(suffix, '').strip()
-
-            if name_core not in seen_name_cores and company_name not in seen_names:
-                seen_names.add(company_name)
-                seen_name_cores.add(name_core)
-                unique_companies.append(company)
-
-        st.session_state.search_results = unique_companies
-        new_unique_count = len(unique_companies) - len(existing_results)
-
-        status_placeholder.success(
-            f"✅ Search complete! Added {new_unique_count} new unique companies!\n"
-            f"Total: {len(unique_companies):,} companies"
-        )
-    else:
-        # New search
-        st.session_state.search_results = all_found_companies[:target_count]  # Trim to target
-
-        success_message = f"✅ Found {len(st.session_state.search_results):,} companies!"
-        if enable_recursive and relaxation_level > 0:
-            success_message += f"\n🔄 Used {relaxation_level} levels of criteria relaxation"
-
-        status_placeholder.success(success_message)
-
-    # Update session state
-    if 'metadata' in locals():
-        st.session_state.model_success_status = metadata.get('model_stats', {})
-
-    # Track search in history
-    st.session_state.search_history.append({
-        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
-        'count': target_count,
-        'found': len(all_found_companies),
-        'mode': search_mode.split()[0],
-        'recursive': enable_recursive,
-        'relaxation_levels': relaxation_level if enable_recursive else 0
-    })
-
-    # Calculate actual cost
-    actual_cost = estimated_cost * (1 + relaxation_level * 0.5) if enable_recursive else estimated_cost
-    update_cost(actual_cost)
-
-    progress_bar.progress(1.0)
-    time.sleep(0.5)
-    progress_bar.empty()
+    finally:
+        # Clean up progress bar
+        time.sleep(1)
+        progress_bar.empty()
 
 
 def display_search_results():
-    """Display search results with revenue categories"""
+    """Display search results with enhanced information"""
 
     if st.session_state.search_results:
         st.divider()
         st.subheader(f"📊 Search Results ({len(st.session_state.search_results):,} companies)")
 
-        # Filtering for large result sets
+        # Show segment distribution if available
+        if st.session_state.search_results and len(st.session_state.search_results) > 0:
+            sample_company = st.session_state.search_results[0]
+            if hasattr(sample_company, 'search_segment') or (
+                    isinstance(sample_company, dict) and 'search_segment' in sample_company):
+
+                with st.expander("📊 Segment Distribution", expanded=False):
+                    segment_counts = {}
+
+                    for company in st.session_state.search_results:
+                        if hasattr(company, 'search_segment'):
+                            segment = company.search_segment
+                        else:
+                            segment = company.get('search_segment', 'unknown')
+
+                        segment_counts[segment] = segment_counts.get(segment, 0) + 1
+
+                    # Display as metrics
+                    cols = st.columns(min(len(segment_counts), 4))
+                    for i, (segment, count) in enumerate(segment_counts.items()):
+                        with cols[i % len(cols)]:
+                            st.metric(segment, count)
+
+        # Filtering
         if len(st.session_state.search_results) > 100:
             col1, col2, col3, col4 = st.columns(4)
 
@@ -642,7 +531,7 @@ def display_search_results():
             if search_filter and search_filter.lower() not in c.get('name', '').lower():
                 continue
 
-            # Map revenue categories to display names
+            # Map revenue categories
             revenue_display = {
                 "very_high": "$1B+",
                 "high": "$100M-$1B",
@@ -652,16 +541,17 @@ def display_search_results():
                 "unknown": "Unknown"
             }
 
-            # Prepare display data
             row_data = {
                 "#": i + 1,
                 "Company": c.get('name', 'Unknown'),
                 "Industry": c.get('industry_category', 'Unknown'),
                 "Revenue Cat.": revenue_display.get(c.get('revenue_category', 'unknown'), 'Unknown'),
-                "Est. Revenue": c.get('estimated_revenue', 'Unknown'),
                 "Employees": c.get('estimated_employees', 'Unknown'),
                 "ICP Score": c.get('icp_score', 0),
-                "ICP Tier": c.get('icp_tier', 'D')
+                "ICP Tier": c.get('icp_tier', 'D'),
+                "Source": c.get('source_model', 'Unknown'),
+                "Segment": c.get('search_segment', 'Unknown')[:15],
+                "Relaxation": c.get('relaxation_level', 0)
             }
 
             results_data.append(row_data)
@@ -672,22 +562,26 @@ def display_search_results():
             if len(st.session_state.search_results) > 100:
                 st.write(f"Showing {len(df)} of {len(st.session_state.search_results):,} companies")
 
-            # Style the dataframe to highlight revenue categories
-            def style_revenue_cat(val):
-                if val == "$1B+":
+            # Style the dataframe
+            def style_tier(val):
+                if val == 'A':
                     return 'background-color: #90EE90'
-                elif val == "$100M-$1B":
+                elif val == 'B':
                     return 'background-color: #98FB98'
-                elif val == "$10M-$100M":
+                elif val == 'C':
                     return 'background-color: #FFE4B5'
-                elif val == "$1M-$10M":
-                    return 'background-color: #F0E68C'
                 else:
                     return ''
 
-            styled_df = df.style.applymap(style_revenue_cat, subset=['Revenue Cat.'])
+            def style_relaxation(val):
+                if val == 0:
+                    return 'color: green'
+                elif val <= 2:
+                    return 'color: orange'
+                else:
+                    return 'color: red'
 
-            # Pagination for large results
+            # Pagination
             if len(df) > 500:
                 page_size = 100
                 page = st.number_input("Page", 1, (len(df) + page_size - 1) // page_size, 1)
