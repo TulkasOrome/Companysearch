@@ -1,6 +1,7 @@
 # shared/search_utils.py
 """
 Search utilities with deduplication strategy optimized for LARGE SCALE (10K+) searches
+FIXED: Reduced batch size to avoid token limits
 """
 
 import asyncio
@@ -19,6 +20,8 @@ class EnhancedSearchStrategistAgent:
         self.deployment_name = deployment_name
         self.client = None
         self.initialized = False
+        # REDUCED from 50 to 15 to avoid token limits
+        self.max_companies_per_call = 15
 
     def _init_llm(self):
         """Initialize the LLM with Azure OpenAI"""
@@ -77,6 +80,11 @@ class EnhancedSearchStrategistAgent:
             )
 
             content = response.choices[0].message.content
+
+            # Debug logging for token issues
+            if response.choices[0].finish_reason == "length":
+                print(f"WARNING: Response truncated due to token limit in {self.deployment_name}")
+
             result = json.loads(content)
 
             enhanced_companies = []
@@ -214,7 +222,7 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.append("")
 
         # Now add the base search criteria
-        prompt_parts.append(f"Find {target_count} companies matching these criteria:")
+        prompt_parts.append(f"Find EXACTLY {target_count} companies matching these criteria:")
 
         # Location
         if criteria.location.countries or criteria.location.cities:
@@ -260,8 +268,8 @@ class EnhancedSearchStrategistAgent:
             prompt_parts.append(
                 f"⚠️ Your specific role: {unique_instructions.get('segment_description', 'Follow instructions above')}")
 
-        # JSON format
-        prompt_parts.append("\nReturn JSON:")
+        # REDUCED JSON FORMAT - fewer fields to save tokens
+        prompt_parts.append("\nReturn JSON with ESSENTIAL fields only:")
         prompt_parts.append("""{"companies":[{
 "name":"Company Name",
 "confidence":"high",
@@ -272,7 +280,7 @@ class EnhancedSearchStrategistAgent:
 "estimated_revenue":"50-100M",
 "estimated_employees":"100-500",
 "headquarters":{"city":"City"},
-"csr_focus_areas":[]
+"csr_focus_areas":["area1"]
 }]}""")
 
         return "\n".join(prompt_parts)
@@ -373,14 +381,15 @@ def determine_scale_strategy(
     num_locations = len(criteria.location.cities) if criteria.location.cities else len(criteria.location.countries)
     num_industries = len(criteria.industries)
 
+    # UPDATED: Reduced from 50 to 15 companies per call
     strategy_params = {
-        'max_per_call': 50,  # GPT limit per call
+        'max_per_call': 15,  # Reduced from 50 to avoid token limits
         'calls_per_model': 1,  # Will be calculated
         'total_calls_needed': 1,  # Will be calculated
     }
 
-    # Calculate calls needed
-    strategy_params['total_calls_needed'] = (target_count + 49) // 50  # Round up
+    # Calculate calls needed with new batch size
+    strategy_params['total_calls_needed'] = (target_count + 14) // 15  # Round up
     strategy_params['calls_per_model'] = (strategy_params['total_calls_needed'] + num_models - 1) // num_models
 
     # Decision tree for LARGE SCALE searches
@@ -624,8 +633,8 @@ async def execute_parallel_search(
     print(f"Calls per model: {strategy_params['calls_per_model']}")
     print(f"{'=' * 60}\n")
 
-    # Calculate targets
-    max_per_call = strategy_params['max_per_call']  # 50 companies per GPT call
+    # Calculate targets - UPDATED to use new batch size
+    max_per_call = strategy_params['max_per_call']  # Now 15 instead of 50
     calls_per_model = strategy_params['calls_per_model']
     base_per_model = target_count // len(models)
 
@@ -639,7 +648,7 @@ async def execute_parallel_search(
 
         print(f"\nAgent {model_idx + 1} ({model}):")
         print(f"  Total target: {model_target} companies")
-        print(f"  Will make {calls_per_model} calls")
+        print(f"  Will make {calls_per_model} calls (up to {max_per_call} companies each)")
 
         # Make multiple calls per model for large searches
         for call_num in range(1, min(calls_per_model + 1, (model_target + max_per_call - 1) // max_per_call + 1)):
@@ -677,6 +686,10 @@ async def execute_parallel_search(
                 companies = result.get('companies', [])
                 model_companies.extend(companies)
                 print(f"    Found: {len(companies)} companies")
+
+                # Log if we got fewer than requested
+                if len(companies) < call_target:
+                    print(f"    WARNING: Got fewer companies than requested ({len(companies)}/{call_target})")
 
                 # Rate limiting between calls
                 if call_num < calls_per_model:
