@@ -1,6 +1,6 @@
 # tabs/execute_search_tab.py
 """
-Execute Search Tab - Fixed timing estimation and added live logging
+Execute Search Tab - Fixed timing estimation, slider sync, and duplicate widget issues
 """
 
 import streamlit as st
@@ -14,7 +14,7 @@ from shared.session_state import update_cost
 
 
 def render_execute_search_tab():
-    """Render the Execute Search tab with fixed timing"""
+    """Render the Execute Search tab with fixed timing and slider sync"""
 
     st.header("Execute Company Search")
 
@@ -76,7 +76,11 @@ def render_execute_search_tab():
             if st.session_state.search_results:
                 st.metric("Current Results", f"{len(st.session_state.search_results):,} companies")
 
-        # Number of companies selector with both slider and number input
+        # Initialize target count in session state if not exists
+        if 'target_count' not in st.session_state:
+            st.session_state.target_count = 100
+
+        # Number of companies selector with synchronized slider and number input
         col1, col2 = st.columns([3, 1])
 
         with col1:
@@ -85,28 +89,27 @@ def render_execute_search_tab():
                 "🎯 Number of Companies to Find",
                 min_value=10,
                 max_value=10000,
-                value=st.session_state.get('target_count', 100),
-                step=10 if st.session_state.get('target_count', 100) < 1000 else 50,
-                help="Select how many companies you want to find"
+                value=st.session_state.target_count,
+                step=10 if st.session_state.target_count < 1000 else 50,
+                help="Select how many companies you want to find",
+                key="target_slider"
             )
 
         with col2:
             # Number input for precise entry
-            target_count = st.number_input(
+            target_count_input = st.number_input(
                 "Or enter exact number",
                 min_value=10,
                 max_value=10000,
-                value=target_count_slider,
+                value=target_count_slider,  # Use slider value as default
                 step=10,
-                help="Type exact number of companies"
+                help="Type exact number of companies",
+                key="target_input"
             )
 
-        # Update slider if number input changes
-        if target_count != target_count_slider:
-            st.session_state.target_count = target_count
-        else:
-            st.session_state.target_count = target_count_slider
-            target_count = target_count_slider
+        # Use the number input value as the final target (it updates when slider changes)
+        target_count = target_count_input
+        st.session_state.target_count = target_count
 
         # Compact metrics row
         col1, col2, col3 = st.columns(3)
@@ -208,13 +211,10 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
     progress_bar = st.progress(0)
     status_placeholder = st.empty()
 
-    # Create a container for live logs
+    # Create a container for live logs - using st.empty() and code block instead of text_area
     log_container = st.container()
     log_placeholder = log_container.empty()
     logs = []
-
-    # Generate a unique key for this search execution using timestamp
-    search_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
     def add_log(message):
         """Add a log message to the display"""
@@ -223,14 +223,8 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode):
         # Keep only last 20 logs for display
         display_logs = logs[-20:]
         log_text = "\n".join(display_logs)
-        # Use unique key based on search timestamp to avoid duplicate key error
-        log_placeholder.text_area(
-            "Search Progress Log",
-            log_text,
-            height=300,
-            disabled=True,
-            key=f"search_log_{search_timestamp}"  # Unique key for each search execution
-        )
+        # Use code block instead of text_area to avoid widget key issues
+        log_placeholder.code(log_text, language=None)
 
     # Store existing results if adding
     existing_results = []
