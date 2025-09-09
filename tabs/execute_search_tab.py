@@ -24,35 +24,230 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def run_parallel_search_wrapper(selected_models, current_criteria, target_count, enable_recursive, tier="A"):
+def run_parallel_search_wrapper(selected_models, current_criteria, target_count, enable_recursive, tier="A",
+                                validate_revenue=True):
     """
-    Wrapper function to run parallel search in a separate thread.
+    Wrapper function to run parallel search with revenue discovery in a separate thread.
     NO session state access allowed here!
-    UPDATED: Added tier parameter
+    UPDATED: Added revenue discovery parameter
     """
     # Import here to avoid circular imports
-    from shared.search_utils import execute_parallel_search
+    from shared.search_utils import execute_parallel_search_with_revenue
 
     # Create a new event loop for this thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     try:
-        # Run the async function with tier
+        # Run the async function with tier and revenue validation
         result = loop.run_until_complete(
-            execute_parallel_search(
+            execute_parallel_search_with_revenue(
                 selected_models,
                 current_criteria,
                 target_count,
                 serper_key=None,
                 enable_recursive=enable_recursive,
                 progress_callback=None,
-                tier=tier  # PASS TIER
+                tier=tier,
+                validate_revenue=validate_revenue  # NEW PARAMETER
             )
         )
         return result
     finally:
         loop.close()
+
+
+def execute_search(target_count, total_calls, estimated_cost, search_mode, enable_recursive, tier="A"):
+    """Execute search with revenue discovery integrated"""
+
+    # Initialize UI elements
+    progress_bar = st.progress(0)
+    status_placeholder = st.empty()
+
+    # Ensure session state is initialized
+    if 'selected_models' not in st.session_state:
+        st.session_state.selected_models = ["gpt-4.1"]
+    if 'parallel_execution_enabled' not in st.session_state:
+        st.session_state.parallel_execution_enabled = False
+
+    # Check if revenue validation should be enabled
+    validate_revenue = False
+    if st.session_state.current_criteria:
+        criteria = st.session_state.current_criteria
+        if hasattr(criteria, 'financial') and (criteria.financial.revenue_min or criteria.financial.revenue_max):
+            validate_revenue = True
+            status_placeholder.info("💰 Revenue validation enabled - will verify company revenues using Serper API")
+
+    # Store existing results if adding
+    existing_results = []
+    if "Add to Existing" in search_mode and st.session_state.search_results:
+        existing_results = st.session_state.search_results.copy()
+        status_placeholder.info(f"Adding to existing {len(existing_results):,} companies...")
+    else:
+        st.session_state.search_results = []
+        st.session_state.all_search_results = []
+
+    # Clear model tracking
+    st.session_state.model_results = {}
+    st.session_state.model_execution_times = {}
+    st.session_state.model_success_status = {}
+
+    try:
+        if st.session_state.parallel_execution_enabled and len(st.session_state.selected_models) > 1:
+            # PARALLEL EXECUTION WITH REVENUE DISCOVERY
+            if validate_revenue:
+                status_placeholder.info(
+                    f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models with revenue validation..."
+                )
+            else:
+                status_placeholder.info(
+                    f"🚀 Searching for {target_count:,} companies using {len(st.session_state.selected_models)} models..."
+                )
+
+            start_time = time.time()
+
+            # CRITICAL: Extract ALL session state values BEFORE thread
+            selected_models = st.session_state.selected_models.copy()
+            current_criteria = st.session_state.current_criteria
+
+            # Execute in thread pool with revenue validation
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    run_parallel_search_wrapper,
+                    selected_models,
+                    current_criteria,
+                    target_count,
+                    enable_recursive,
+                    tier,
+                    validate_revenue  # Pass revenue validation flag
+                )
+
+                # Show progress while waiting
+                while not future.done():
+                    elapsed = time.time() - start_time
+                    estimated_progress = min(elapsed / 30, 0.9)
+                    progress_bar.progress(estimated_progress)
+                    time.sleep(0.5)
+
+                # Get result
+                result = future.result()
+
+            execution_time = time.time() - start_time
+
+            # Extract results
+            new_companies = result.get('companies', [])
+            metadata = result.get('metadata', {})
+
+            # Show execution summary (minimized by default)
+            if metadata:
+                with st.expander("📊 Execution Summary", expanded=False):
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Companies Found", len(new_companies))
+                    with col2:
+                        st.metric("Execution Time", f"{execution_time:.1f}s")
+                    with col3:
+                        st.metric("Models Used", len(selected_models))
+                    with col4:
+                        revenue_excluded = metadata.get('revenue_excluded', 0)
+                        if revenue_excluded > 0:
+                            st.metric("Revenue Excluded", revenue_excluded,
+                                      help="Companies that didn't meet revenue criteria")
+
+            # Process results
+            if existing_results:
+                all_companies = existing_results + new_companies
+
+                # Final deduplication
+                seen_names = set()
+                unique_companies = []
+
+                for company in all_companies:
+                    if hasattr(company, 'name'):
+                        company_name = company.name.lower().strip()
+                    else:
+                        company_name = company.get('name', '').lower().strip()
+
+                    if company_name not in seen_names:
+                        seen_names.add(company_name)
+                        unique_companies.append(company)
+
+                st.session_state.search_results = unique_companies
+                new_unique_count = len(unique_companies) - len(existing_results)
+
+                if validate_revenue and metadata.get('revenue_excluded', 0) > 0:
+                    status_placeholder.success(
+                        f"✅ Search complete! Added {new_unique_count} new unique companies!\n"
+                        f"Total: {len(unique_companies):,} companies\n"
+                        f"📊 {metadata.get('revenue_excluded', 0)} companies excluded for not meeting revenue criteria"
+                    )
+                else:
+                    status_placeholder.success(
+                        f"✅ Search complete! Added {new_unique_count} new unique companies!\n"
+                        f"Total: {len(unique_companies):,} companies"
+                    )
+            else:
+                st.session_state.search_results = new_companies[:target_count]
+
+                if validate_revenue and metadata.get('revenue_excluded', 0) > 0:
+                    status_placeholder.success(
+                        f"✅ Found {len(st.session_state.search_results):,} companies!\n"
+                        f"📊 {metadata.get('revenue_excluded', 0)} companies excluded for not meeting revenue criteria"
+                    )
+                else:
+                    status_placeholder.success(
+                        f"✅ Found {len(st.session_state.search_results):,} companies!"
+                    )
+
+            # Update session state
+            if metadata:
+                st.session_state.model_success_status = metadata.get('model_performance', {})
+
+        else:
+            # SINGLE MODEL EXECUTION
+            st.error("Single model execution not recommended for large searches. Please enable parallel execution.")
+            return
+
+        # Track search in history
+        if 'new_companies' in locals():
+            search_history_entry = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M"),
+                'count': target_count,
+                'found': len(new_companies),
+                'duplicates_prevented': metadata.get('duplicates_prevented', 0) if 'metadata' in locals() else 0,
+                'revenue_excluded': metadata.get('revenue_excluded', 0) if 'metadata' in locals() else 0,
+                'mode': search_mode.split()[0],
+                'recursive': enable_recursive,
+                'relaxation_levels': metadata.get('relaxation_levels_used', 0) if 'metadata' in locals() else 0,
+                'revenue_validated': validate_revenue
+            }
+            st.session_state.search_history.append(search_history_entry)
+
+            # Calculate actual cost (includes revenue discovery credits)
+            base_cost = estimated_cost * (1 + metadata.get('relaxation_levels_used',
+                                                           0) * 0.3) if 'metadata' in locals() else estimated_cost
+
+            # Add revenue discovery cost (approximately 3 credits per company checked)
+            if validate_revenue:
+                revenue_cost = len(new_companies) * 0.003  # 3 credits * $0.001 per credit
+                total_cost = base_cost + revenue_cost
+            else:
+                total_cost = base_cost
+
+            update_cost(total_cost)
+
+    except Exception as e:
+        if 'status_placeholder' in locals():
+            status_placeholder.error(f"Search failed: {str(e)}")
+        else:
+            st.error(f"Search failed: {str(e)}")
+        logger.error(f"Search error: {str(e)}")
+        traceback.print_exc()
+
+    finally:
+        # Clean up progress bar
+        time.sleep(1)
+        progress_bar.empty()
 
 
 def render_execute_search_tab():
@@ -458,7 +653,7 @@ def execute_search(target_count, total_calls, estimated_cost, search_mode, enabl
 
 
 def display_search_results():
-    """Display search results with enhanced information and improved pagination"""
+    """Display search results with enhanced information including discovered revenue"""
 
     if not st.session_state.search_results:
         return
@@ -492,13 +687,12 @@ def display_search_results():
     # Filtering options
     col1, col2, col3, col4 = st.columns(4)
 
-    # Always show filter options but with appropriate defaults
     with col1:
         tier_filter = st.multiselect(
             "Filter by ICP Tier",
             ["A", "B", "C", "D"],
             default=["A", "B", "C", "D"],
-            key="tier_filter_execute"  # Unique key
+            key="tier_filter_execute"
         )
 
     with col2:
@@ -512,7 +706,7 @@ def display_search_results():
             "Filter by Industry",
             industries,
             default=[],
-            key="industry_filter_execute"  # Unique key
+            key="industry_filter_execute"
         )
 
     with col3:
@@ -520,21 +714,26 @@ def display_search_results():
             "Revenue Category",
             ["very_high", "high", "medium", "low", "very_low", "unknown"],
             default=[],
-            key="revenue_filter_execute"  # Unique key
+            key="revenue_filter_execute"
         )
 
     with col4:
         search_filter = st.text_input(
             "Search company names",
             placeholder="Type to search...",
-            key="search_filter_execute"  # Unique key
+            key="search_filter_execute"
         )
 
     # Convert to dataframe and apply filters
     results_data = []
     for i, company in enumerate(st.session_state.search_results):
+        # Get the company data as a dict
         if hasattr(company, 'dict'):
             c = company.dict()
+            # IMPORTANT: Also check for _revenue_discovered attribute on the original object
+            if hasattr(company, '_revenue_discovered'):
+                # Add the revenue discovered data to the dict
+                c['_revenue_discovered'] = company._revenue_discovered
         else:
             c = company
 
@@ -558,11 +757,49 @@ def display_search_results():
             "unknown": "Unknown"
         }
 
+        # Get discovered revenue if available - CHECK MULTIPLE LOCATIONS
+        discovered_revenue = "Not checked"
+        revenue_confidence = ""
+
+        # Method 1: Check if revenue data is directly in the dict (for dict-based companies)
+        if 'discovered_revenue_amount' in c and c.get('discovered_revenue_amount'):
+            discovered_revenue = f"{c['discovered_revenue_amount']} ({c.get('discovered_revenue_year', 'recent')})"
+            confidence = c.get('discovered_revenue_confidence', 0)
+            if confidence >= 0.8:
+                revenue_confidence = "✅"
+            elif confidence >= 0.6:
+                revenue_confidence = "⚠️"
+            else:
+                revenue_confidence = "❓"
+
+        # Method 2: Check for _revenue_discovered in the dict (added from the object)
+        elif '_revenue_discovered' in c and c['_revenue_discovered'].get('discovered_revenue_amount'):
+            rev_data = c['_revenue_discovered']
+            discovered_revenue = f"{rev_data['discovered_revenue_amount']} ({rev_data.get('discovered_revenue_year', 'recent')})"
+            confidence = rev_data.get('discovered_revenue_confidence', 0)
+            if confidence >= 0.8:
+                revenue_confidence = "✅"
+            elif confidence >= 0.6:
+                revenue_confidence = "⚠️"
+            else:
+                revenue_confidence = "❓"
+
+        # Method 3: Check the estimated_revenue field if it was updated
+        elif c.get('estimated_revenue') and '$' in str(c.get('estimated_revenue', '')):
+            # If estimated_revenue contains a dollar sign, it's likely from discovery
+            discovered_revenue = c['estimated_revenue']
+            # Try to determine confidence based on format
+            if 'M' in discovered_revenue or 'B' in discovered_revenue:
+                revenue_confidence = "⚠️"  # Medium confidence as we're not sure
+
         row_data = {
             "#": i + 1,
             "Company": c.get('name', 'Unknown'),
             "Industry": c.get('industry_category', 'Unknown'),
-            "Revenue Cat.": revenue_display.get(c.get('revenue_category', 'unknown'), 'Unknown'),
+            "GPT Revenue Est.": c.get('estimated_revenue', 'Unknown') if '$' not in str(
+                c.get('estimated_revenue', '')) else 'See Discovered',
+            "Discovered Revenue": discovered_revenue,
+            "Conf.": revenue_confidence,
             "Employees": c.get('estimated_employees', 'Unknown'),
             "ICP Score": c.get('icp_score', 0),
             "ICP Tier": c.get('icp_tier', 'D'),
@@ -687,17 +924,29 @@ def display_search_results():
         else:
             return 'color: red'
 
+    def style_revenue_confidence(val):
+        """Style revenue confidence"""
+        if val == "✅":
+            return 'color: green; font-weight: bold'
+        elif val == "⚠️":
+            return 'color: orange'
+        elif val == "❓":
+            return 'color: red'
+        return ''
+
     # Get the page slice
     df_page = df.iloc[start_idx:end_idx].copy()
 
     # Apply styles to the page
     styled_df = df_page.style.apply(style_tier, axis=1)
 
-    # Apply column-specific styles using .map instead of deprecated .applymap
+    # Apply column-specific styles using .map
     if 'Relaxation' in df_page.columns:
         styled_df = styled_df.map(style_relaxation, subset=['Relaxation'])
     if 'Confidence' in df_page.columns:
         styled_df = styled_df.map(style_confidence, subset=['Confidence'])
+    if 'Conf.' in df_page.columns:
+        styled_df = styled_df.map(style_revenue_confidence, subset=['Conf.'])
 
     # Display the styled dataframe
     st.dataframe(
@@ -705,6 +954,67 @@ def display_search_results():
         use_container_width=True,
         height=min(600, len(df_page) * 35 + 50)
     )
+
+    # Show revenue discovery summary
+    revenue_checked_count = 0
+    high_confidence_count = 0
+    medium_confidence_count = 0
+    no_revenue_found_count = 0
+
+    # Count revenue discovery stats properly
+    for company in st.session_state.search_results:
+        if hasattr(company, 'dict'):
+            c_dict = company.dict()
+            if hasattr(company, '_revenue_discovered'):
+                c_dict['_revenue_discovered'] = company._revenue_discovered
+        else:
+            c_dict = company
+
+        # Check if this company has revenue discovery data
+        has_revenue_data = False
+        confidence = 0
+        amount = None
+
+        if 'discovered_revenue_amount' in c_dict:
+            has_revenue_data = True
+            confidence = c_dict.get('discovered_revenue_confidence', 0)
+            amount = c_dict.get('discovered_revenue_amount')
+        elif '_revenue_discovered' in c_dict:
+            has_revenue_data = True
+            confidence = c_dict['_revenue_discovered'].get('discovered_revenue_confidence', 0)
+            amount = c_dict['_revenue_discovered'].get('discovered_revenue_amount')
+        elif c_dict.get('estimated_revenue') and '$' in str(c_dict.get('estimated_revenue', '')):
+            # Revenue was discovered and stored in estimated_revenue
+            has_revenue_data = True
+            amount = c_dict.get('estimated_revenue')
+            confidence = 0.7  # Default medium confidence
+
+        if has_revenue_data:
+            revenue_checked_count += 1
+            if not amount:
+                no_revenue_found_count += 1
+            elif confidence >= 0.8:
+                high_confidence_count += 1
+            elif confidence >= 0.6:
+                medium_confidence_count += 1
+            else:
+                no_revenue_found_count += 1
+
+    # Show summary if any companies were checked
+    if revenue_checked_count > 0:
+        with st.expander("💰 Revenue Discovery Summary", expanded=False):
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Checked", revenue_checked_count)
+            with col2:
+                st.metric("High Confidence", high_confidence_count)
+            with col3:
+                st.metric("Medium Confidence", medium_confidence_count)
+            with col4:
+                st.metric("No Revenue Found", no_revenue_found_count)
+
+            st.info("Revenue discovery uses Serper API to validate company revenues against your criteria. "
+                    "Companies with revenues outside your specified range are automatically excluded during search.")
 
     # Export filtered results option
     if len(df) > 0:
