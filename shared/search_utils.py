@@ -1109,12 +1109,19 @@ async def execute_parallel_search_with_revenue(
         tier: str = "A",
         validate_revenue: bool = True  # NEW PARAMETER
 ) -> Dict[str, Any]:
-    """Execute parallel search with exhaustive verification and revenue discovery"""
+    """Execute parallel search with exhaustive verification and optional revenue discovery"""
 
     logger.info(f"Starting exhaustive search for {target_count} companies with {len(models)} models for Tier {tier}")
 
-    # Import revenue discovery module
-    from shared.revenue_discovery import validate_company_revenues
+    # Log revenue validation status
+    if validate_revenue:
+        logger.info("💰 Revenue validation ENABLED - will verify company revenues using Serper API")
+    else:
+        logger.info("📊 Revenue validation DISABLED - accepting all companies without revenue checks")
+
+    # Import revenue discovery module only if needed
+    if validate_revenue:
+        from shared.revenue_discovery import validate_company_revenues
 
     # Check if revenue validation is needed
     has_revenue_criteria = (
@@ -1122,6 +1129,9 @@ async def execute_parallel_search_with_revenue(
             criteria.financial.revenue_max is not None
     )
     should_validate_revenue = validate_revenue and has_revenue_criteria
+
+    if has_revenue_criteria and not validate_revenue:
+        logger.info("⚠️ Revenue criteria set but validation disabled - criteria will be ignored")
 
     # Store tier in criteria for downstream use
     criteria.tier = tier
@@ -1177,14 +1187,22 @@ async def execute_parallel_search_with_revenue(
 
             if (original_min != relaxed_min) or (original_max != relaxed_max):
                 revenue_relaxed = True
-                logger.info(f"📊 Revenue criteria relaxed: ${relaxed_min / 1e6:.0f}M - ${relaxed_max / 1e6:.0f}M")
+                # FIXED: Handle None values for min/max
+                if relaxed_min is not None and relaxed_max is not None:
+                    logger.info(f"📊 Revenue criteria relaxed: ${relaxed_min / 1e6:.0f}M - ${relaxed_max / 1e6:.0f}M")
+                elif relaxed_min is not None:
+                    logger.info(f"📊 Revenue criteria relaxed: Min ${relaxed_min / 1e6:.0f}M (no max)")
+                elif relaxed_max is not None:
+                    logger.info(f"📊 Revenue criteria relaxed: Max ${relaxed_max / 1e6:.0f}M (no min)")
+                else:
+                    logger.info(f"📊 Revenue criteria relaxed: No specific limits")
 
             # Re-evaluate excluded companies if revenue criteria changed
             if revenue_relaxed and relaxation_level not in re_evaluated_at_level:
                 re_evaluated_at_level[relaxation_level] = True
 
                 # Check companies excluded for being too low
-                if relaxed_min < original_min:
+                if relaxed_min is not None and original_min is not None and relaxed_min < original_min:
                     for company in excluded_by_revenue['too_low']:
                         # Extract the discovered revenue amount
                         if hasattr(company, 'dict'):
@@ -1210,7 +1228,7 @@ async def execute_parallel_search_with_revenue(
                                 pass
 
                 # Check companies excluded for being too high
-                if relaxed_max > original_max:
+                if relaxed_max is not None and original_max is not None and relaxed_max > original_max:
                     for company in excluded_by_revenue['too_high']:
                         if hasattr(company, 'dict'):
                             c_dict = company.dict()
@@ -1401,6 +1419,9 @@ async def execute_parallel_search_with_revenue(
 
                             # Use only valid companies
                             companies = valid_companies
+                        elif not should_validate_revenue:
+                            logger.info(
+                                f"💡 Skipping revenue validation for {len(companies)} companies (validation disabled)")
                         # ==================== END REVENUE DISCOVERY ====================
 
                         segment_info = {
@@ -1416,17 +1437,21 @@ async def execute_parallel_search_with_revenue(
                 # Record attempt
                 tracker.record_attempt(relaxation_level, len(round_companies))
 
-                logger.info(f"Attempt {attempts} found {len(round_companies)} companies (after revenue validation)")
+                if should_validate_revenue:
+                    logger.info(f"Attempt {attempts} found {len(round_companies)} companies (after revenue validation)")
+                else:
+                    logger.info(f"Attempt {attempts} found {len(round_companies)} companies")
 
                 if progress_callback:
                     progress_data = tracker.get_progress_summary()
-                    total_excluded = sum(len(v) for v in excluded_by_revenue.values())
-                    progress_data['revenue_excluded'] = total_excluded
-                    progress_data['revenue_excluded_breakdown'] = {
-                        'too_low': len(excluded_by_revenue['too_low']),
-                        'too_high': len(excluded_by_revenue['too_high']),
-                        'no_data': len(excluded_by_revenue['no_data'])
-                    }
+                    if should_validate_revenue:
+                        total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+                        progress_data['revenue_excluded'] = total_excluded
+                        progress_data['revenue_excluded_breakdown'] = {
+                            'too_low': len(excluded_by_revenue['too_low']),
+                            'too_high': len(excluded_by_revenue['too_high']),
+                            'no_data': len(excluded_by_revenue['no_data'])
+                        }
                     progress_callback(progress_data)
 
             # Check if we have enough
@@ -1435,14 +1460,15 @@ async def execute_parallel_search_with_revenue(
                 break
 
             # If many companies were excluded for revenue, try to find more
-            total_excluded = sum(len(v) for v in excluded_by_revenue.values())
-            if should_validate_revenue and total_excluded > len(all_companies) * 0.3:
-                if revenue_validation_attempts < max_revenue_attempts:
-                    revenue_validation_attempts += 1
-                    logger.info(f"⚠️ High revenue exclusion rate ({total_excluded} excluded). "
-                                f"Attempting to find more companies (attempt {revenue_validation_attempts}/{max_revenue_attempts})")
-                    # Continue searching without incrementing relaxation level
-                    continue
+            if should_validate_revenue:
+                total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+                if total_excluded > len(all_companies) * 0.3:
+                    if revenue_validation_attempts < max_revenue_attempts:
+                        revenue_validation_attempts += 1
+                        logger.info(f"⚠️ High revenue exclusion rate ({total_excluded} excluded). "
+                                    f"Attempting to find more companies (attempt {revenue_validation_attempts}/{max_revenue_attempts})")
+                        # Continue searching without incrementing relaxation level
+                        continue
 
             # Check for consecutive low yields
             if tracker.get_consecutive_low_yields(relaxation_level) >= 3:
@@ -1450,13 +1476,18 @@ async def execute_parallel_search_with_revenue(
                 break
 
         # Level summary
-        total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+        if should_validate_revenue:
+            total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+        else:
+            total_excluded = 0
+
         logger.info(f"\nLevel {relaxation_level} Summary:")
         logger.info(f"  - Attempts: {attempts}")
         logger.info(f"  - Companies found at this level: {len(level_companies)}")
         logger.info(f"  - Total companies: {len(all_companies)}")
-        logger.info(f"  - Revenue excluded (total): {total_excluded}")
-        if total_excluded > 0:
+
+        if should_validate_revenue and total_excluded > 0:
+            logger.info(f"  - Revenue excluded (total): {total_excluded}")
             logger.info(f"    - Too low: {len(excluded_by_revenue['too_low'])}")
             logger.info(f"    - Too high: {len(excluded_by_revenue['too_high'])}")
             logger.info(f"    - No data: {len(excluded_by_revenue['no_data'])}")
@@ -1492,36 +1523,53 @@ async def execute_parallel_search_with_revenue(
 
     # Final summary
     summary = tracker.get_progress_summary()
-    total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+
+    if should_validate_revenue:
+        total_excluded = sum(len(v) for v in excluded_by_revenue.values())
+    else:
+        total_excluded = 0
 
     logger.info(f"\n{'=' * 60}")
     logger.info(f"SEARCH COMPLETE")
     logger.info(f"Total found: {len(all_companies)}")
-    logger.info(f"Revenue excluded: {total_excluded}")
-    if total_excluded > 0:
+
+    if should_validate_revenue and total_excluded > 0:
+        logger.info(f"Revenue excluded: {total_excluded}")
         logger.info(f"  - Too low: {len(excluded_by_revenue['too_low'])} companies")
         logger.info(f"  - Too high: {len(excluded_by_revenue['too_high'])} companies")
         logger.info(f"  - No data: {len(excluded_by_revenue['no_data'])} companies")
+    elif not should_validate_revenue and has_revenue_criteria:
+        logger.info("Revenue validation was DISABLED - no companies excluded for revenue")
+
     logger.info(f"Relaxation levels used: {relaxation_level}")
     logger.info(f"Time elapsed: {summary['elapsed_time']:.1f}s")
 
+    # Build metadata
+    metadata = {
+        'total_found': len(all_companies),
+        'letter_coverage': summary.get('letter_coverage', {}),
+        'model_performance': summary['models'],
+        'execution_time': summary['elapsed_time'],
+        'relaxation_levels_used': relaxation_level,
+        'segments_tried': summary.get('segments_tried', {}),
+        'attempts_per_level': summary.get('attempts_per_level', {}),
+        'tier': tier,
+        'revenue_validation_enabled': validate_revenue
+    }
+
+    if should_validate_revenue:
+        metadata['revenue_excluded'] = total_excluded
+        metadata['revenue_excluded_breakdown'] = {
+            'too_low': len(excluded_by_revenue['too_low']),
+            'too_high': len(excluded_by_revenue['too_high']),
+            'no_data': len(excluded_by_revenue['no_data'])
+        }
+        metadata['strategy'] = 'EXHAUSTIVE_WITH_REVENUE_VALIDATION_AND_RECOVERY'
+    else:
+        metadata['revenue_excluded'] = 0
+        metadata['strategy'] = 'EXHAUSTIVE_WITHOUT_REVENUE_VALIDATION'
+
     return {
         'companies': all_companies[:target_count],
-        'metadata': {
-            'total_found': len(all_companies),
-            'revenue_excluded': total_excluded,
-            'revenue_excluded_breakdown': {
-                'too_low': len(excluded_by_revenue['too_low']),
-                'too_high': len(excluded_by_revenue['too_high']),
-                'no_data': len(excluded_by_revenue['no_data'])
-            },
-            'letter_coverage': summary.get('letter_coverage', {}),
-            'model_performance': summary['models'],
-            'execution_time': summary['elapsed_time'],
-            'relaxation_levels_used': relaxation_level,
-            'strategy': 'EXHAUSTIVE_WITH_REVENUE_VALIDATION_AND_RECOVERY',
-            'segments_tried': summary.get('segments_tried', {}),
-            'attempts_per_level': summary.get('attempts_per_level', {}),
-            'tier': tier
-        }
+        'metadata': metadata
     }
