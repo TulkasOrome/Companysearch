@@ -18,3 +18,23 @@ sessions/
 .vscode/
 /TPB TESTS/
 /examples/
+/revenue_test_results/
+/revenue_test_results/diagnostic_20250909_130345.log
+/revenue_test_results/raw_results_Microsoft_Corporation.json
+/revenue_test_results/revenue_test_20250909_125847.log
+/revenue_test_results/revenue_test_20250909_125930.log
+/revenue_test_results/revenue_test_20250909_125954.log
+/revenue_test_results/revenue_test_interim_20250909_130037.csv
+/revenue_test_results/revenue_test_interim_20250909_130122.csv
+/revenue_test_results/revenue_test_interim_20250909_130202.csv
+/revenue_test_results/sample_test_companies.csv
+/revenuetests/
+/revenuetests/revenue_test_results/
+/revenuetests/sample_test_companies.csv
+/revenuetests/test_companies.csv
+/revenuetests/test_companies.py
+/revenuetests/test_companies_challenging.csv
+/revenuetests/test_companies_comprehensive.csv
+/revenuetests/test_companies_full.csv
+/revenuetests/test_companies_validation.csv
+/revenuetests/testrev.py

@@ -452,32 +452,56 @@ class EnhancedSearchStrategistAgent:
             return {"companies": [], "segment": f"{segment_type}:{segment_value}", "error": str(e)}
 
     def _validate_company_against_criteria(self, company_data: Dict[str, Any], criteria: SearchCriteria) -> bool:
-        """Validate that a company matches the search criteria - STATE AND INDUSTRY MATCHING"""
+        """Validate that a company matches the search criteria - FIXED STATE MATCHING"""
 
-        # STATE VALIDATION
+        # Import the geography module
+        from shared.australian_geography import get_state_from_location, validate_location_in_state
+
+        # STATE VALIDATION - ENHANCED WITH CITY-STATE MAPPING
         if criteria.location.states:
-            company_hq = str(company_data.get('headquarters', {})).lower() if company_data.get('headquarters') else ""
-            state_match = False
+            # Extract all location information from company
+            location_fields = []
 
-            for state in criteria.location.states:
-                state_lower = state.lower()
-                # Check various state representations
-                if state_lower in company_hq or self._get_state_abbrev(state_lower) in company_hq:
-                    state_match = True
-                    break
+            # Check headquarters
+            if company_data.get('headquarters'):
+                hq = company_data['headquarters']
+                if isinstance(hq, dict):
+                    location_fields.append(hq.get('city', ''))
+                    location_fields.append(hq.get('state', ''))
+                    location_fields.append(hq.get('address', ''))
+                else:
+                    location_fields.append(str(hq))
 
-            if not state_match:
-                logger.debug(f"State mismatch: {company_data.get('name')} not in {criteria.location.states}")
+            # Check office locations
+            if company_data.get('office_locations'):
+                for office in company_data['office_locations']:
+                    if isinstance(office, dict):
+                        location_fields.append(office.get('city', ''))
+                        location_fields.append(office.get('state', ''))
+                    else:
+                        location_fields.append(str(office))
+
+            # Check service areas
+            if company_data.get('service_areas'):
+                location_fields.extend(company_data['service_areas'])
+
+            # Combine all location info
+            combined_location = ' '.join(str(f) for f in location_fields if f)
+
+            # Validate using the geography module
+            if not validate_location_in_state(combined_location, criteria.location.states):
+                logger.debug(
+                    f"State mismatch: {company_data.get('name')} location '{combined_location}' not in {criteria.location.states}")
                 return False
 
-        # INDUSTRY VALIDATION - Strict matching
+        # INDUSTRY VALIDATION - Keep existing logic but make it less strict for Tier B/C
         if criteria.industries:
             company_industry = company_data.get('industry_category', '').lower()
             industry_match = False
 
             for ind in criteria.industries:
                 ind_name = ind.get('name', '').lower()
-                # Allow some flexibility for industry matching
+                # More flexible matching
                 if ind_name in company_industry or company_industry in ind_name:
                     industry_match = True
                     break
@@ -486,12 +510,17 @@ class EnhancedSearchStrategistAgent:
                     industry_match = True
                     break
 
-            if not industry_match:
+            # For Tier B/C, be less strict about industry matching
+            tier = getattr(criteria, 'tier', 'A')
+            if not industry_match and tier == 'A':
                 logger.debug(
-                    f"Industry mismatch: {company_data.get('name')} industry '{company_industry}' not in {[ind['name'] for ind in criteria.industries]}")
+                    f"Industry mismatch: {company_data.get('name')} industry '{company_industry}' not in criteria")
                 return False
+            elif not industry_match and tier in ['B', 'C']:
+                # Log but don't reject for Tier B/C
+                logger.debug(f"Industry soft mismatch for Tier {tier}: {company_data.get('name')}")
 
-        # ENTITY TYPE VALIDATION - Ensure it's an actual company
+        # ENTITY TYPE VALIDATION - Keep existing
         company_name = company_data.get('name', '').lower()
         excluded_entity_terms = [
             'tafe', 'institute of tafe', 'university', 'college', 'school',
@@ -551,7 +580,7 @@ class EnhancedSearchStrategistAgent:
             exclusion_list: Optional[List[str]] = None,
             relaxed_items: List[str] = None
     ) -> str:
-        """Build prompt based on segmentation strategy - ENHANCED WITH STATE AND INDUSTRY ENFORCEMENT"""
+        """Build prompt based on segmentation strategy - ENHANCED WITH STATE/CITY MAPPING"""
         prompt_parts = []
 
         prompt_parts.append("=" * 60)
@@ -590,26 +619,42 @@ class EnhancedSearchStrategistAgent:
         # Add search criteria
         prompt_parts.append("\n📋 SEARCH CRITERIA:")
 
-        # ENHANCED LOCATION - Include states!
+        # ENHANCED LOCATION SECTION WITH CITY-STATE MAPPING
         if criteria.location.countries:
             prompt_parts.append(f"⛔ Countries: {', '.join(criteria.location.countries)}")
 
-        # STATE ENFORCEMENT - CRITICAL FIX
+        # STATE ENFORCEMENT WITH CITY EXAMPLES - CRITICAL FIX
         if criteria.location.states:
+            from shared.australian_geography import get_cities_in_state
+
             prompt_parts.append(
                 f"⛔ MUST be headquartered in these STATES/REGIONS: {', '.join(criteria.location.states)}")
-            prompt_parts.append(f"⛔ DO NOT include companies from other states")
+
+            # Add city examples for each state
+            for state in criteria.location.states:
+                major_cities = get_cities_in_state(state, major_only=True)
+                if major_cities:
+                    city_list = ', '.join([c.title() for c in major_cities[:6]])
+                    prompt_parts.append(f"   ✓ {state} includes: {city_list}")
+
+            prompt_parts.append("⛔ Companies in ANY city within these states are VALID")
+            prompt_parts.append("⛔ DO NOT exclude companies just because they list a city instead of a state")
 
             # Add specific guidance for Australian states
             if "Victoria" in criteria.location.states:
-                prompt_parts.append("⛔ Victoria means Melbourne, Geelong, Ballarat, Bendigo and other Victorian cities")
-                prompt_parts.append("⛔ EXCLUDE companies from Sydney, Brisbane, Perth, Adelaide etc.")
+                prompt_parts.append("✓ Victoria companies include those in Melbourne, Geelong, Ballarat, Bendigo, etc.")
+                prompt_parts.append("❌ EXCLUDE companies from Sydney, Brisbane, Perth, Adelaide (NOT Victoria)")
             elif "New South Wales" in criteria.location.states:
-                prompt_parts.append("⛔ New South Wales means Sydney, Newcastle, Wollongong and other NSW cities")
-                prompt_parts.append("⛔ EXCLUDE companies from Melbourne, Brisbane, Perth, Adelaide etc.")
+                prompt_parts.append("✓ NSW companies include those in Sydney, Newcastle, Wollongong, Parramatta, etc.")
+                prompt_parts.append("❌ EXCLUDE companies from Melbourne, Brisbane, Perth, Adelaide (NOT NSW)")
+            elif "Queensland" in criteria.location.states:
+                prompt_parts.append(
+                    "✓ Queensland companies include those in Brisbane, Gold Coast, Cairns, Townsville, etc.")
+                prompt_parts.append("❌ EXCLUDE companies from Sydney, Melbourne, Perth, Adelaide (NOT Queensland)")
 
+        # City-specific criteria (if specified separately)
         if criteria.location.cities:
-            prompt_parts.append(f"Cities: {', '.join(criteria.location.cities[:5])}")
+            prompt_parts.append(f"Specific cities: {', '.join(criteria.location.cities[:5])}")
 
         # Add proximity if specified
         if criteria.location.proximity:
@@ -617,58 +662,91 @@ class EnhancedSearchStrategistAgent:
             radius = criteria.location.proximity.get('radius_km')
             prompt_parts.append(f"⛔ Within {radius}km of {location}")
 
-        # Financial - keeping as is per your request
+        # Financial criteria
         if criteria.financial.revenue_min or criteria.financial.revenue_max:
             if criteria.financial.revenue_min and criteria.financial.revenue_max:
                 prompt_parts.append(
-                    f"Revenue: ${criteria.financial.revenue_min / 1e6:.0f}M-${criteria.financial.revenue_max / 1e6:.0f}M")
+                    f"Revenue: ${criteria.financial.revenue_min / 1e6:.0f}M-${criteria.financial.revenue_max / 1e6:.0f}M {criteria.financial.revenue_currency}")
             elif criteria.financial.revenue_min:
-                prompt_parts.append(f"Revenue: >${criteria.financial.revenue_min / 1e6:.0f}M")
+                prompt_parts.append(
+                    f"Revenue: >${criteria.financial.revenue_min / 1e6:.0f}M {criteria.financial.revenue_currency}")
+            elif criteria.financial.revenue_max:
+                prompt_parts.append(
+                    f"Revenue: <${criteria.financial.revenue_max / 1e6:.0f}M {criteria.financial.revenue_currency}")
 
-        # Employees - keeping as is per your request
+        # Employee criteria
         if criteria.organizational.employee_count_min:
             prompt_parts.append(f"Minimum employees: {criteria.organizational.employee_count_min}")
+        if criteria.organizational.employee_count_max:
+            prompt_parts.append(f"Maximum employees: {criteria.organizational.employee_count_max}")
 
         # ENHANCED INDUSTRY ENFORCEMENT
         if segment_type != "industry" and criteria.industries:
             ind_names = [ind['name'] for ind in criteria.industries[:5]]
-            prompt_parts.append(f"⛔ ONLY these industries: {', '.join(ind_names)}")
-            prompt_parts.append(f"⛔ DO NOT include companies from other industries")
+            prompt_parts.append(f"⛔ Industries: {', '.join(ind_names)}")
+
+            # Get tier for less strict enforcement
+            tier = getattr(criteria, 'tier', 'A')
+            if tier == 'A':
+                prompt_parts.append(f"⛔ ONLY include companies in these specific industries")
+            else:
+                prompt_parts.append(f"⛔ PREFER companies in these industries, but related industries acceptable")
 
             # Add specific guidance for common industries
-            if any('technology' in ind['name'].lower() for ind in criteria.industries):
-                prompt_parts.append("✓ Technology includes: software, IT services, SaaS, digital, tech consulting")
-                prompt_parts.append("❌ NOT technology: construction using tech, tech-enabled retail, energy companies")
-            if any('health' in ind['name'].lower() for ind in criteria.industries):
-                prompt_parts.append(
-                    "✓ Health includes: hospitals, medical devices, pharmaceuticals, healthcare services")
-                prompt_parts.append("❌ NOT health: education institutions teaching health, health insurance only")
-            if any('financial' in ind['name'].lower() for ind in criteria.industries):
-                prompt_parts.append("✓ Financial Services includes: banks, insurance, investment, accounting, fintech")
-                prompt_parts.append("❌ NOT financial services: superannuation funds, government financial entities")
+            for ind in criteria.industries[:3]:
+                ind_name = ind['name'].lower()
+                if 'technology' in ind_name or 'tech' in ind_name:
+                    prompt_parts.append(
+                        "✓ Technology includes: software, IT services, SaaS, digital, tech consulting, fintech")
+                elif 'health' in ind_name:
+                    prompt_parts.append(
+                        "✓ Health includes: hospitals, medical devices, pharmaceuticals, healthcare services, aged care")
+                elif 'financial' in ind_name:
+                    prompt_parts.append(
+                        "✓ Financial Services includes: banks, insurance, investment, accounting, wealth management")
+                elif 'construction' in ind_name:
+                    prompt_parts.append(
+                        "✓ Construction includes: builders, contractors, civil engineering, infrastructure, property development")
+                elif 'property' in ind_name or 'real estate' in ind_name:
+                    prompt_parts.append(
+                        "✓ Property includes: real estate, property management, REITs, property development")
+                elif 'hospitality' in ind_name:
+                    prompt_parts.append(
+                        "✓ Hospitality includes: hotels, resorts, restaurants, tourism, accommodation, entertainment")
 
         # Business types
         if criteria.business_types:
             prompt_parts.append(f"Business types: {', '.join(criteria.business_types)}")
 
         # CSR (if not relaxed)
-        if criteria.behavioral.csr_focus_areas:
-            prompt_parts.append(f"CSR areas: {', '.join(criteria.behavioral.csr_focus_areas[:3])}")
+        if criteria.behavioral.csr_focus_areas and "CSR focus areas removed" not in (relaxed_items or []):
+            prompt_parts.append(f"CSR focus areas: {', '.join(criteria.behavioral.csr_focus_areas[:3])}")
+
+        # Office types
+        if criteria.organizational.office_types:
+            prompt_parts.append(f"Office types: {', '.join(criteria.organizational.office_types)}")
 
         prompt_parts.append("\n📊 RETURN JSON FORMAT:")
         prompt_parts.append("""{"companies":[{
-"name":"Company Name (actual company only)",
-"confidence":"high",
-"operates_in_country":true,
-"business_type":"B2B",
-"industry_category":"Must match criteria industries",
-"reasoning":"Why this matches",
-"estimated_revenue":"50-100M",
-"revenue_category":"medium",
-"estimated_employees":"100-500",
-"headquarters":{"city":"City", "state":"State must match criteria"},
-"csr_focus_areas":[]
-}]}""")
+    "name":"Company Name (actual company only)",
+    "confidence":"high",
+    "operates_in_country":true,
+    "business_type":"B2B or B2C etc",
+    "industry_category":"Must be relevant to criteria",
+    "reasoning":"Why this matches criteria",
+    "estimated_revenue":"50-100M",
+    "revenue_category":"medium",
+    "estimated_employees":"100-500",
+    "headquarters":{"city":"Melbourne", "state":"Victoria"},
+    "office_locations":[],
+    "csr_focus_areas":[]
+    }]}""")
+
+        prompt_parts.append("\n⛔ IMPORTANT REMINDERS:")
+        prompt_parts.append("- Include the STATE in headquarters (e.g., 'Victoria' for Melbourne companies)")
+        prompt_parts.append("- Companies in any city within the specified states are VALID")
+        prompt_parts.append("- Do NOT reject companies just because they're listed by city name")
+        prompt_parts.append("- Return ONLY actual commercial companies, not institutions or charities")
 
         return "\n".join(prompt_parts)
 
